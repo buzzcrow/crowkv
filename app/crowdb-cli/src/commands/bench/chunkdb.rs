@@ -386,7 +386,11 @@ async fn verify_live_chunks(client: &Arc<ChunkdbClient>, result: &mut TaskResult
     let mut expected_busy = 0u64;
     // Query in bounded parallel batches. At peak load, serial verification of
     // every live chunk can take longer than the benchmark itself.
-    for ids in result.live.chunks(256) {
+    // Keep verification below the service saturation point. A 256-query
+    // burst can starve individual reads behind KV work long enough for the
+    // RPC reaper to expire them, which then looks like lost allocation and
+    // produces a false space-accounting mismatch.
+    for ids in result.live.chunks(64) {
         let mut queries = tokio::task::JoinSet::new();
         for id in ids {
             let client = Arc::clone(client);
@@ -394,9 +398,13 @@ async fn verify_live_chunks(client: &Arc<ChunkdbClient>, result: &mut TaskResult
             queries.spawn(async move { (id, query_eventually(&client, id).await) });
         }
         while let Some(joined) = queries.join_next().await {
-            let Ok((id, query_result)) = joined else {
-                result.errors += 1;
-                continue;
+            let (id, query_result) = match joined {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("chunkdb verification task failed: {error}");
+                    result.errors += 1;
+                    continue;
+                }
             };
             match query_result {
                 Ok(chunk)
@@ -428,7 +436,17 @@ async fn verify_live_chunks(client: &Arc<ChunkdbClient>, result: &mut TaskResult
                         }
                     }
                 }
-                _ => result.errors += 1,
+                Ok(chunk) => {
+                    eprintln!(
+                        "chunkdb verification found invalid state for {id:?}: state={}",
+                        chunk.state
+                    );
+                    result.errors += 1;
+                }
+                Err(error) => {
+                    eprintln!("chunkdb verification query failed for {id:?}: {error}");
+                    result.errors += 1;
+                }
             }
         }
     }

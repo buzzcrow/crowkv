@@ -19,12 +19,12 @@
 #   CHUNKDB_BENCH_RESULTS        result TSV path
 #
 # Wl       Grp Thr Strip EC  Cli Cdb Ddb Kv Wkr Win Coal chunk/s block/s p50   p99    Dur Err Stop     Spc
-# allocate  3   1   1     8+4 2   2   2   2  2   32  32   436     5232    2386  2777   20s 0   deadline exact
-# allocate  3   16  1     8+4 2   2   2   2  2   32  32   5099    61188   3060  4810   20s 0   deadline exact
-# allocate  3   128 1     8+4 4   4   4   4  4   32  32   8259    99108   14849 27332  20s 0   deadline exact
-# allocate  3   256 1     8+4 4   4   4   4  4   32  32   8737    104844  28112 51656  20s 0   deadline exact
-# allocate  3   512 1     8+4 4   4   4   4  4   32  32   8548    102576  57402 103077 20s 0   deadline exact
-# Clean artifacts: chunkdb-regression-20260905-181843 (all rows).
+# allocate  3   1   1     8+4 2   2   2   2  2   32  32   799     9588    1275  1561  20s 0   deadline exact
+# allocate  3   16  1     8+4 2   2   2   2  2   32  32   8800    105600  1719  3481  20s 0   deadline exact
+# allocate  3   128 1     8+4 4   4   4   4  4   32  32   11914   142968  9945  22922 20s 0   deadline exact
+# allocate  3   256 1     8+4 4   4   4   4  4   32  32   12685   152220  18427 49050 20s 0   deadline exact
+# allocate  3   512 1     8+4 4   4   4   4  4   32  32   12734   152808  37131 91641 20s 0   deadline exact
+# Clean artifacts: chunkdb-r98-final2-20260905-223329 (all rows).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -64,7 +64,7 @@ trap destroy_cluster EXIT
 
 field() {
     local line="$1" name="$2"
-    sed -n "s/.*${name}=\([^ ]*\).*/\1/p" <<<"$line"
+    sed -n "s/.*\(^\| \)${name}=\([^ ]*\).*/\2/p" <<<"$line"
 }
 
 verify_logs() {

@@ -9,6 +9,7 @@
 
 pub mod pool;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use futures::future::join_all;
@@ -138,12 +139,10 @@ impl ChunkAllocator {
         unit_count: u32,
     ) -> Result<Vec<Segment>, AllocError> {
         let mut all_segments: Vec<Segment> = Vec::new();
-        // Remaining requests per entry: (disk_group_id, block_count).
-        let mut pending: Vec<(u64, u32)> = plan
-            .entries
-            .iter()
-            .map(|e| (e.disk_group_id, e.block_count))
-            .collect();
+        // One request per DiskDB/data group. The selector still chooses each
+        // EC position independently; aggregation only combines the counts for
+        // positions placed on the same node.
+        let mut pending = grouped_requests(plan);
 
         for attempt in 0..=MAX_ALLOC_RETRIES {
             if pending.is_empty() {
@@ -310,6 +309,17 @@ impl ChunkAllocator {
             .await
             .map_err(AllocError::Rollback)
     }
+}
+
+fn grouped_requests(plan: &PlacementPlan) -> Vec<(u64, u32)> {
+    let mut grouped = HashMap::<u64, u32>::new();
+    for entry in &plan.entries {
+        grouped
+            .entry(entry.disk_group_id)
+            .and_modify(|count| *count = count.saturating_add(entry.block_count))
+            .or_insert(entry.block_count);
+    }
+    grouped.into_iter().collect()
 }
 
 fn extract_segments(strip: &ChunkStrip) -> Vec<Segment> {

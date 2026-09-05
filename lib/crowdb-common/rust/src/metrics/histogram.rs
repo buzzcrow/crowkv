@@ -5,25 +5,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::MetricName;
 
-/// Latency bucket boundaries in nanoseconds. 13 buckets: 12 explicit
-/// thresholds + infinity. An observation is placed in the first bucket
+/// Common 1-2-5 latency bucket boundaries in nanoseconds. An observation is placed in the first bucket
 /// whose upper bound is >= the value.
-const BUCKET_BOUNDS_NS: [u64; 12] = [
+const BUCKET_BOUNDS_NS: [u64; 22] = [
     1_000,         // 1µs
+    2_000,         // 2µs
+    5_000,         // 5µs
     10_000,        // 10µs
+    20_000,        // 20µs
+    50_000,        // 50µs
     100_000,       // 100µs
+    200_000,       // 200µs
     500_000,       // 500µs
     1_000_000,     // 1ms
+    2_000_000,     // 2ms
     5_000_000,     // 5ms
     10_000_000,    // 10ms
+    20_000_000,    // 20ms
     50_000_000,    // 50ms
     100_000_000,   // 100ms
+    200_000_000,   // 200ms
     500_000_000,   // 500ms
     1_000_000_000, // 1s
+    2_000_000_000, // 2s
+    5_000_000_000, // 5s
     u64::MAX,      // infinity (catch-all)
 ];
 
-const NUM_BUCKETS: usize = BUCKET_BOUNDS_NS.len(); // 12
+const NUM_BUCKETS: usize = BUCKET_BOUNDS_NS.len();
 
 /// Fixed-bucket latency histogram with window + cumulative tracking.
 ///
@@ -281,8 +290,8 @@ mod tests {
         assert_eq!(bucket_index(0), 0);
         assert_eq!(bucket_index(1_000), 0);
         assert_eq!(bucket_index(1_001), 1);
-        assert_eq!(bucket_index(10_000), 1);
-        assert_eq!(bucket_index(10_001), 2);
-        assert_eq!(bucket_index(u64::MAX), 11);
+        assert_eq!(bucket_index(10_000), 3);
+        assert_eq!(bucket_index(10_001), 4);
+        assert_eq!(bucket_index(u64::MAX), 21);
     }
 }

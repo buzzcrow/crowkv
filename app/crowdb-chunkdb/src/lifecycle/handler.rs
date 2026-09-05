@@ -290,9 +290,9 @@ impl LifecycleHandler {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
 
-        let mut chunk = Chunk {
+        let chunk = Chunk {
             id: Some(id),
-            state: ProtoChunkState::Init as i32,
+            state: ProtoChunkState::Active as i32,
             create_ts_ms: now_ms,
             sealed_ts_ms: 0,
             capacity: strips.iter().map(|s| s.capacity).sum(),
@@ -304,7 +304,8 @@ impl LifecycleHandler {
             observe_elapsed(&metrics.allocate_record_build, record_started);
         }
 
-        self.persist_allocated_chunk(&mut chunk).await?;
+        self.persist_active_chunk(&chunk).await?;
+        self.commit_strip_segments_background(chunk.strips.clone());
 
         // Update cache.
         if let Some(ref mut g) = guard {
@@ -320,28 +321,8 @@ impl LifecycleHandler {
         Ok(chunk)
     }
 
-    async fn persist_allocated_chunk(&self, chunk: &mut Chunk) -> Result<(), LifecycleError> {
-        let init_started = std::time::Instant::now();
-        if let Err(error) = self.store.put_chunk(chunk).await {
-            self.allocator.rollback_strips(&chunk.strips).await?;
-            return Err(error.into());
-        }
-        if let Some(metrics) = &self.metrics {
-            observe_elapsed(&metrics.allocate_kv_init_persist, init_started);
-        }
-
-        let commit_started = std::time::Instant::now();
-        self.commit_strip_segments(&chunk.strips).await?;
-        if let Some(metrics) = &self.metrics {
-            observe_elapsed(&metrics.allocate_commit, commit_started);
-            let blocks = chunk.strips.iter().flat_map(extract_segments).count();
-            metrics
-                .allocate_commit_blocks
-                .inc_by(u64::try_from(blocks).unwrap_or(u64::MAX));
-        }
-
-        chunk.state = ProtoChunkState::Active as i32;
-        let active_started = std::time::Instant::now();
+    async fn persist_active_chunk(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
+        let persist_started = std::time::Instant::now();
         for attempt in 0..100_u32 {
             match self.store.put_chunk(chunk).await {
                 Ok(()) => break,
@@ -350,13 +331,38 @@ impl LifecycleHandler {
                     tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                     drop(error);
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    self.allocator.rollback_strips(&chunk.strips).await?;
+                    return Err(error.into());
+                }
             }
         }
         if let Some(metrics) = &self.metrics {
-            observe_elapsed(&metrics.allocate_kv_active_persist, active_started);
+            observe_elapsed(&metrics.allocate_kv_persist, persist_started);
         }
         Ok(())
+    }
+
+    fn commit_strip_segments_background(&self, strips: Vec<ChunkStrip>) {
+        let allocator = Arc::clone(&self.allocator);
+        let metrics = self.metrics.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let segments: Vec<_> = strips.iter().flat_map(extract_segments).collect();
+            let block_count = u64::try_from(segments.len()).unwrap_or(u64::MAX);
+            let result = allocator.pool().commit_blocks(segments).await;
+            if let Some(metrics) = metrics {
+                observe_elapsed(&metrics.allocate_commit, started);
+                if result.is_ok() {
+                    metrics.allocate_commit_blocks.inc_by(block_count);
+                } else {
+                    metrics.allocate_commit_errors.inc();
+                }
+            }
+            if let Err(error) = result {
+                warn!(%error, "background block commit failed");
+            }
+        });
     }
 
     /// Append strips to an active chunk.

@@ -47,7 +47,7 @@ co-located production-shaped fixture without cross-strip batching.
   and identify the dominant stage. Files: generated `bench-log/` artifacts.
 - [x] **Tune measured bottleneck**: change one control or implementation stage
   at a time and retain an A/B comparison. Files: selected after measurement.
-- [ ] **Run confirmation matrix**: repeat the selected 20-second case three
+- [x] **Run confirmation matrix**: repeat the selected 20-second case three
   times and verify 10% stability. Files: generated `bench-log/` artifacts.
 - [x] **Record flow analysis**: document commands, hardware, results, log root,
   metrics attribution, and bottleneck. Files:
@@ -55,7 +55,7 @@ co-located production-shaped fixture without cross-strip batching.
 
 ## Phase 5: Verification and Cleanup
 
-- [ ] **Run gates**: formatting, clippy, affected tests, full suite, and
+- [~] **Run gates**: formatting, clippy, affected tests, full suite, and
   ChunkDB regression through `pixi run`.
 - [ ] **Review changes**: apply `/review`, fix correctness and hot-path issues,
   and rerun affected gates.

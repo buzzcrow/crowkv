@@ -823,7 +823,11 @@ fn fb_ec_state_to_proto(s: crowdb_protocol::chunkdb_fb::FBEcState) -> ProtoEcSta
 // ── Endpoint helpers ──────────────────────────────────────────────
 
 fn rpc_error_to_client(e: RpcError) -> ChunkdbClientError {
-    ChunkdbClientError::Rpc(format!("rpc error: {e:?}"))
+    if e.is_retryable() {
+        ChunkdbClientError::Unavailable(format!("rpc transient: {e:?}"))
+    } else {
+        ChunkdbClientError::Rpc(format!("rpc error: {e:?}"))
+    }
 }
 
 fn normalize_endpoint(endpoint: &str) -> String {

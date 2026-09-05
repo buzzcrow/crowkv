@@ -10,19 +10,29 @@
 namespace crowdb::common::metrics
 {
 
-static constexpr size_t                        kNumBuckets     = 12;
+static constexpr size_t                        kNumBuckets     = 22;
 static const std::array<uint64_t, kNumBuckets> kBucketBoundsNs = {
     1'000,         // 1us
+    2'000,         // 2us
+    5'000,         // 5us
     10'000,        // 10us
+    20'000,        // 20us
+    50'000,        // 50us
     100'000,       // 100us
+    200'000,       // 200us
     500'000,       // 500us
     1'000'000,     // 1ms
+    2'000'000,     // 2ms
     5'000'000,     // 5ms
     10'000'000,    // 10ms
+    20'000'000,    // 20ms
     50'000'000,    // 50ms
     100'000'000,   // 100ms
+    200'000'000,   // 200ms
     500'000'000,   // 500ms
     1'000'000'000, // 1s
+    2'000'000'000, // 2s
+    5'000'000'000, // 5s
     UINT64_MAX     // infinity
 };
 

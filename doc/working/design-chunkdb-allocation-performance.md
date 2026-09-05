@@ -83,7 +83,9 @@ Allocation adds these boundaries and magnitudes:
 - `allocate.commit.lh`, `allocate.commit_blocks.c`, and
   `allocate.commit_errors.c`;
 - `allocate.record_build.lh`;
-- `allocate.kv_init_persist.lh` and `allocate.kv_active_persist.lh`;
+- `allocate.kv_persist.lh` for the single Active chunk write;
+- `allocate.commit.lh`, `allocate.commit_blocks.c`, and
+  `allocate.commit_errors.c` for asynchronous DiskDB commit;
 - `allocate.response_build.lh`;
 - `allocate.rollback.lh`, `allocate.rollback_blocks.c`, and
   `allocate.rollback_errors.c`;
