@@ -625,20 +625,27 @@ blocks per node. On 3-node cluster (unsafe mode) → 12 blocks, 4 per node.
 3. Calculate strip layout based on requested capacity and strip type
 4. For each strip:
    - Call placement selector to get node/disk-group assignments
-   - Call diskdb to allocate blocks in parallel
+   - Group placements by DiskDB data group and allocate each group in parallel
    - On failure: rollback (free all allocated blocks), return error
-5. Persist chunk metadata with state = Init as a durable allocation intent
-6. Commit every segment in its exact DiskDB group
-7. Persist state = Active and return the chunk to the caller
+5. Persist the complete chunk metadata with state = Active
+6. Start grouped DiskDB block commits asynchronously
+7. Refresh the chunk cache and return the Active chunk to the caller
 
-**Parallel allocation**: Strips are allocated in parallel to minimize
-latency. Diskdb calls within a strip are also parallel (all blocks in a
-mirror strip, all data+parity blocks in an EC strip).
+**Parallel allocation**: Strips remain sequential. Within a strip, ChunkDB
+sends one request per DiskDB data group and runs those requests concurrently.
+DiskDB persists each allocated busy block as Tentative before responding.
 
-**Rollback**: If allocation or commit fails, every segment from every prior
-strip is freed through its exact DiskDB group before returning. A failed
-rollback is surfaced. A surviving Init record is reconciled at startup, so a
-crash between persistence and activation retains a durable recovery intent.
+**Success boundary**: The Active chunk and every referenced Tentative busy
+block are durable before ChunkDB returns success. DiskDB commit overwrites
+each busy block as Committed after the response. A reconciliation scanner can
+later resolve a crash in this interval from the Active chunk reference and the
+allocation incarnation.
+
+**Rollback**: If allocation or Active metadata persistence fails, every known
+segment from every prior strip is freed through its exact DiskDB group before
+returning. A failed rollback is surfaced. Background commit failure is
+reported by metrics and logs for later reconciliation; it does not retract an
+already durable Active chunk.
 
 ## 9. Chunk Lifecycle
 
@@ -648,13 +655,12 @@ Init ──> Active ──> Sealed ──> Deleted
 
 | State   | Description                                                  |
 |---------|--------------------------------------------------------------|
-| Init    | Internal transient state during allocation. Not visible to callers. |
+| Init    | Reserved transient state; the allocation path publishes Active directly. |
 | Active  | Chunk is open for writes. Strips can be appended. Returned by AllocateChunk. |
 | Sealed  | Chunk is read-only. Records final length and seal timestamp. |
 | Deleted | Durable cleanup intent; retained segments still need freeing. |
 
 **State transitions**:
-- `Init → Active`: After every allocated segment is committed.
 - `Active → Sealed`: Via `SealChunk` RPC. Validates state, updates sealed_length.
 - `Active → Deleted`: Persist cleanup intent, free segments, persist tombstone.
 - `Sealed → Deleted`: Persist cleanup intent, free segments, persist tombstone.
@@ -831,7 +837,7 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
 - `allocate_chunk` (caller-supplied ID): `check_range` →
   `acquire_for_create` → existence check (`store.get_chunk`; return
   `ChunkAlreadyExists` if taken) → build chunk, allocate strips,
-  `put_chunk`, `commit_strip_segments` → `guard.refresh(chunk)`.
+  `put_chunk`, start background segment commit → `guard.refresh(chunk)`.
 - `allocate_chunk` (auto-generated ID): skip the lock (UUID collision
   negligible). After `put_chunk`, `populate_cache(id, chunk)` directly.
 - `append_chunk`: `check_range` → `acquire` → state check, allocate

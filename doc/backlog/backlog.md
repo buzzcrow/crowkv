@@ -15,11 +15,6 @@ complexity, and dependency. Before implementation, follow the
 
 ### High Priority
 
-- **[R98](R98-chunkdb-performance-optimization.md)** — ChunkDB allocation
-  performance — Area: chunkdb / diskdb / kv / RPC — Measure and tune one-strip
-  EC 8+4 allocation on a three-node co-located cluster with three data groups,
-  complete workflow metrics, exact accounting, and retained cross-process
-  logs.
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
   migration — Area: chunkdb / kv — Implement the full
   `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
