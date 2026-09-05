@@ -117,6 +117,8 @@ clean-env = "pkill -9 -f 'crowdb-kv-server.*test-' 2>/dev/null; pkill -9 -f 'cro
 # debug binaries that subprocess-spawning tests (crowdb-web, crowdb-console-shared)
 # need at target/debug/.
 build-tests = "cargo test --workspace --all-targets --no-run"
+# Verify every workspace package with tests is assigned to a CI test task.
+test-task-coverage = "python tools/check-test-task-coverage.py"
 
 # ── Lint job ──
 # (uses rs-fmt / rs-lint / tree-lint defined above, no separate test-* tasks)
@@ -128,6 +130,17 @@ test-rpc-ct = { cmd = "ctest --test-dir lib/crowdb-rpc/build --output-on-failure
 test-diskio-ct = { cmd = "ctest --test-dir app/crowdb-diskio/build --output-on-failure", depends-on = ["build-cpp"] }
 test-tree-ffi = { cmd = "cargo test -p crowdb-tree-ffi --all-targets" }
 test-rpc-ffi = { cmd = "cargo test -p crowdb-rpc-ffi --all-targets" }
+test-cpp = { cmd = '''
+bash -c '
+set -e
+pixi run test-tree-ct
+pixi run test-common-ct
+pixi run test-rpc-ct
+pixi run test-diskio-ct
+pixi run test-tree-ffi
+pixi run test-rpc-ffi
+'
+''', depends-on = ["build-cpp"] }
 
 # ── UnitTests job: pure Rust, no subprocess spawning ──
 test-common = { cmd = "cargo test -p crowdb-common --all-targets" }
@@ -135,6 +148,16 @@ test-protocol = { cmd = "cargo test -p crowdb-protocol --all-targets" }
 test-kv-core = { cmd = "cargo test -p crowdb-kv --all-targets" }
 test-kv-client = { cmd = "cargo test -p crowdb-kv-client --all-targets" }
 test-chunkdb-client = { cmd = "cargo test -p crowdb-chunkdb-client --all-targets" }
+test-unit = { cmd = '''
+bash -c '
+set -e
+pixi run test-common
+pixi run test-protocol
+pixi run test-kv-core
+pixi run test-kv-client
+pixi run test-chunkdb-client
+'
+''', depends-on = ["build-tests"] }
 
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
 test-kv-server = { cmd = "cargo test -p crowdb-kv-server --all-targets" }
@@ -143,37 +166,9 @@ test-diskdb-client = { cmd = "cargo test -p crowdb-diskdb-client --all-targets" 
 test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --all-targets" }
 test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
-
-# ── ConsoleTests job: spawns crowdb-kv-server via lifecycle::deploy_local ──
-# Build the debug binary explicitly so tests find it at target/debug/.
-test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --all-targets" }
-test-console-cli = { cmd = "cargo test -p crowdb-cli --all-targets" }
-test-console-server = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-web --all-targets" }
-
-# ── UITests job: Playwright browser E2E + subprocess spawning ──
-test-console-ui = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-port-alloc && export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server && cd app/crowdb-web/ui && npm test && npx playwright test --config=e2e/realBackend.config.ts", depends-on = ["install-ui-deps"] }
-
-# ── Full local suite (not a CI job; runs everything in one process) ──
-# Grouped by CI job order. clean-env runs at start and before the
-# subprocess-spawning blocks to reset test-logs.
-test-suite = { cmd = '''
+test-server = { cmd = '''
 bash -c '
 set -e
-pixi run clean-env
-# CppTests
-pixi run test-tree-ct
-pixi run test-common-ct
-pixi run test-tree-ffi
-pixi run test-rpc-ct
-pixi run test-rpc-ffi
-pixi run test-diskio-ct
-# UnitTests
-pixi run test-common
-pixi run test-protocol
-pixi run test-kv-core
-pixi run test-kv-client
-pixi run test-chunkdb-client
-# ServerTests
 pixi run clean-env
 pixi run test-kv-server
 pixi run test-diskdb
@@ -181,12 +176,37 @@ pixi run test-diskdb-client
 pixi run test-chunkdb
 pixi run test-chunk-client
 pixi run test-diskio-client
-# ConsoleTests
+'
+''', depends-on = ["build-tests"] }
+
+# ── ConsoleTests job: spawns crowdb-kv-server via lifecycle::deploy_local ──
+# Build the debug binary explicitly so tests find it at target/debug/.
+test-console-shared = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-console-shared --all-targets" }
+test-console-cli = { cmd = "cargo test -p crowdb-cli --all-targets" }
+test-console-server = { cmd = "cargo build -p crowdb-kv-server && cargo test -p crowdb-web --all-targets" }
+test-console = { cmd = '''
+bash -c '
+set -e
 pixi run clean-env
 pixi run test-console-shared
 pixi run test-console-cli
 pixi run test-console-server
-# UITests
+'
+''', depends-on = ["build-tests"] }
+
+# ── UITests job: Playwright browser E2E + subprocess spawning ──
+test-console-ui = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-port-alloc && export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server && cd app/crowdb-web/ui && npm test && npx playwright test --config=e2e/realBackend.config.ts", depends-on = ["install-ui-deps"] }
+
+# ── Full local suite (not a CI job; runs everything in one process) ──
+# Grouped by CI job order. Each group task owns its component list;
+# subprocess groups clean the environment before starting.
+test-suite = { cmd = '''
+bash -c '
+set -e
+pixi run test-cpp
+pixi run test-unit
+pixi run test-server
+pixi run test-console
 pixi run clean-env
 pixi run test-console-ui
 '

@@ -138,6 +138,9 @@ allow_unsafe_ec = {allow_unsafe_ec}
 cache_capacity = 1000
 sweep_chunk_lock_interval_secs = 10
 lock_hold_warn_threshold_ms = 1000
+
+[placement]
+allow_unsafe_ec = true
 "#,
             seeds = kv_seeds
                 .iter()

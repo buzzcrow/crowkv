@@ -116,6 +116,22 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
       await step('todo-ui: create logical and physical test data', async () => {
         await createStore(baseURL!, STORE_ID, NODE_IDS);
         await addGroup(baseURL!, STORE_ID, GROUP_ID, REPLICA_ID, [NODE_IDS[0]]);
+        // Wait for the diskdb instance to register with group-0 before
+        // addDiskGroup (auto-assign owner requires a live diskdb instance).
+        const diskdbPort = deploymentPorts.get(NODE_IDS[0])!.diskdbRpc + 2;
+        {
+          const api = await apiContext(baseURL!);
+          try {
+            await expect.poll(async () => {
+              const response = await api.get('/api/diskdb/instances');
+              if (!response.ok()) return false;
+              const instances = await response.json();
+              return instances.some((entry: any) => String(entry.rpc_endpoint).includes(`:${diskdbPort}`));
+            }, { timeout: 15_000, intervals: [200] }).toBe(true);
+          } finally {
+            await api.dispose();
+          }
+        }
         await addDiskGroup(baseURL!, NODE_IDS[0], DISK_GROUP_ID, 'Physical Group');
         await addDisksBatch(baseURL!, NODE_IDS[0], DISK_GROUP_ID, [{ disk_id: DISK_ID }]);
         const api = await apiContext(baseURL!);

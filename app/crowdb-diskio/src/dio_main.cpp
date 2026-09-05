@@ -127,42 +127,44 @@ static std::shared_ptr<crowdb::diskio::IoEngine> create_engine(const crowdb::dis
 
 // Build the DiskSet from config. Disks with a non-empty path are
 // BlockDisk (O_DIRECT block device); disks with an empty path are
-// dummy disks (NullDisk or MemDisk per config). For UringEngine, real
-// block device fds are registered with the uring for fd→pipeline routing.
+// dummy disks (NullDisk or MemDisk per config). For UringEngine, all
+// disk fds (real block devices + memfd-backed dummy disks) are
+// registered with the uring for fd→pipeline routing.
 static std::shared_ptr<crowdb::diskio::DiskSet> build_disk_set(const crowdb::diskio::DioConfig          &cfg,
-                                                             std::shared_ptr<crowdb::diskio::IoEngine> engine)
+                                                               std::shared_ptr<crowdb::diskio::IoEngine> engine)
 {
     using namespace crowdb::diskio;
     auto disk_set = std::make_shared<DiskSet>();
 #ifdef CROWDB_HAVE_LIBURING
-    // If the engine is a UringEngine, register each real disk's fd with it.
     auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine);
 #endif
     for (const auto &entry : cfg.disks) {
+        std::shared_ptr<Disk> disk;
         if (entry.path.empty()) {
             // Dummy disk (NullDisk or MemDisk).
             auto zones = std::vector<Zone>(entry.zones);
             if (cfg.dummy_disk_type == DummyDiskType::Mem) {
-                auto disk = std::make_shared<MemDisk>(entry.id, engine, std::move(zones), cfg.dummy_props);
-                disk_set->add(disk);
+                disk = std::make_shared<MemDisk>(entry.id, engine, std::move(zones), cfg.dummy_props);
             }
             else {
-                auto disk = std::make_shared<NullDisk>(entry.id, engine, std::move(zones), cfg.dummy_props);
-                disk_set->add(disk);
+                disk = std::make_shared<NullDisk>(entry.id, engine, std::move(zones), cfg.dummy_props);
             }
         }
         else {
             // Real block device.
-            auto disk =
+            disk =
                 std::make_shared<BlockDisk>(entry.id, entry.path, engine, std::vector<Zone>(entry.zones), cfg.o_direct);
-#ifdef CROWDB_HAVE_LIBURING
-            // Register the disk's fd with the uring for fd→pipeline routing.
-            if (uring_engine != nullptr && disk->fd() >= 0) {
-                uring_engine->uring().register_fd(disk->fd());
-            }
-#endif
-            disk_set->add(disk);
         }
+#ifdef CROWDB_HAVE_LIBURING
+        // Register the disk's fd with the uring for fd→pipeline routing.
+        // All disk types (BlockDisk, MemDisk, NullDisk) have real fds that
+        // go through the uring submit path; unregistered fds fall back to
+        // pipeline 0 but their completions are not reliably delivered.
+        if (uring_engine != nullptr && disk->fd() >= 0) {
+            uring_engine->uring().register_fd(disk->fd());
+        }
+#endif
+        disk_set->add(disk);
     }
     return disk_set;
 }
@@ -233,7 +235,7 @@ int main(int argc, char *argv[])
         g0_cfg.node_id             = cfg.node_id;
         g0_cfg.dg_id               = cfg.dg_id;
         g0_cfg.sync_interval_ms    = cfg.sync_interval_ms;
-        g0_cfg.rpc_endpoint       = cfg.bind_address + ":" + std::to_string(actual_port);
+        g0_cfg.rpc_endpoint        = cfg.bind_address + ":" + std::to_string(actual_port);
         g0_cfg.auto_discover_disks = cfg.auto_discover_disks;
         g0_cfg.dummy_disk_type     = cfg.dummy_disk_type;
         g0_cfg.dummy_props         = cfg.dummy_props;

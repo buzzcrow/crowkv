@@ -195,6 +195,10 @@ test.describe('chunk · capacity · disk-group', () => {
     const disk560 = randomDiskId();
     const disk570 = randomDiskId();
 
+    // Deploy a diskdb instance so addDiskGroup auto-assigns ownership
+    // (required since diskdb ownership enforcement — a3d39f0e).
+    await apiDeployDiskdb(baseURL!, nodeId, freePort());
+
     // Pre-create the disk-groups that are not created through the UI, so
     // the tree already holds them when the page mounts.
     await apiAddDiskGroup(baseURL!, nodeId, dg530, 'test-dg-530');
@@ -415,6 +419,8 @@ test.describe('chunk · capacity · disk-group', () => {
       await apiRemoveDiskGroup(baseURL!, nodeId, dg540);
       await apiRemoveDiskGroup(baseURL!, nodeId, dg560);
       await apiRemoveDiskGroup(baseURL!, nodeId, dg570);
+      // Stop the diskdb deployed for addDiskGroup ownership assignment.
+      await removeDiskdb(baseURL!, nodeId);
     }
   });
 

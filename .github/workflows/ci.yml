@@ -32,6 +32,8 @@ jobs:
       uses: Swatinem/rust-cache@v2
     - name: Check formatting
       run: pixi run cargo fmt --all -- --check
+    - name: Check test-task coverage
+      run: pixi run test-task-coverage
     - name: Run clippy
       run: pixi run cargo clippy --all-targets -- -D warnings
 
@@ -55,18 +57,8 @@ jobs:
       run: pixi run clean-env
     - name: Build C++ libs + all Rust test binaries
       run: pixi run build-cpp && pixi run build-tests
-    - name: Run C++ tests
-      run: pixi run test-tree-ct
-    - name: Run common C++ tests
-      run: pixi run test-common-ct
-    - name: Run RPC C++ tests
-      run: pixi run test-rpc-ct
-    - name: Run diskio C++ tests
-      run: pixi run test-diskio-ct
-    - name: Run tree FFI tests
-      run: pixi run test-tree-ffi
-    - name: Run RPC FFI tests
-      run: pixi run test-rpc-ffi
+    - name: Run C++ and FFI tests
+      run: pixi run test-cpp
     - name: Capture runner state on failure
       if: failure()
       run: |
@@ -109,16 +101,8 @@ jobs:
       run: pixi run clean-env
     - name: Build all Rust test binaries
       run: pixi run build-tests
-    - name: Run common tests
-      run: pixi run test-common
-    - name: Run protocol tests
-      run: pixi run test-protocol
-    - name: Run core tests
-      run: pixi run test-kv-core
-    - name: Run client tests
-      run: pixi run test-kv-client
-    - name: Run chunkdb-client tests
-      run: pixi run test-chunkdb-client
+    - name: Run unit tests
+      run: pixi run test-unit
     - name: Capture runner state on failure
       if: failure()
       run: |
@@ -161,18 +145,8 @@ jobs:
       run: pixi run clean-env
     - name: Build all Rust test binaries + crowdb-kv-server
       run: pixi run build-tests
-    - name: Run kv-server tests
-      run: pixi run test-kv-server
-    - name: Run diskdb tests
-      run: pixi run test-diskdb
-    - name: Run diskdb-client tests
-      run: pixi run test-diskdb-client
-    - name: Run chunkdb tests
-      run: pixi run test-chunkdb
-    - name: Run chunk-client tests
-      run: pixi run test-chunk-client
-    - name: Run diskio-client tests
-      run: pixi run test-diskio-client
+    - name: Run server tests
+      run: pixi run test-server
     - name: Capture runner state on failure
       if: failure()
       run: |
@@ -194,6 +168,9 @@ jobs:
           /tmp/crowdb-*
         if-no-files-found: ignore
         retention-days: 7
+    - name: Clean subprocesses
+      if: always()
+      run: pixi run clean-env
 
   ConsoleTests:
     runs-on: ubuntu-latest
@@ -217,12 +194,8 @@ jobs:
       run: pixi run build-tests
     - name: Build crowdb-rpc-fb-server (for bench rpc e2e test)
       run: pixi run cmake -S lib/crowdb-rpc -B lib/crowdb-rpc/build -DCMAKE_BUILD_TYPE=Release && pixi run cmake --build lib/crowdb-rpc/build --target crowdb-rpc-fb-server -j
-    - name: Run console-shared tests
-      run: pixi run test-console-shared
-    - name: Run CLI tests
-      run: pixi run test-console-cli
-    - name: Run mgmt-api tests
-      run: pixi run test-console-server
+    - name: Run console tests
+      run: pixi run test-console
     - name: Capture runner state on failure
       if: failure()
       run: |
@@ -244,6 +217,9 @@ jobs:
           /tmp/crowdb-*
         if-no-files-found: ignore
         retention-days: 7
+    - name: Clean subprocesses
+      if: always()
+      run: pixi run clean-env
 
   UITests:
     runs-on: ubuntu-latest
@@ -302,3 +278,6 @@ jobs:
           app/crowdb-web/ui/playwright-report
           app/crowdb-web/ui/test-results
         retention-days: 7
+    - name: Clean subprocesses
+      if: always()
+      run: pixi run clean-env

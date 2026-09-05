@@ -13,6 +13,7 @@ import {
   addDisksBatch,
   removeDisk,
   randomDiskId,
+  deployDiskdb as apiDeployDiskdb,
   deployNodeServer,
   clusterInit,
   waitForLeader,
@@ -86,6 +87,9 @@ test.describe('chunk · capacity · disk', () => {
     // but in the full suite the refresh may lag behind the server's
     // readiness — poll until build_hardware_client can resolve an endpoint.
     await waitForLeader(baseURL, 0, 0, 15_000);
+    // Deploy a diskdb instance so addDiskGroup auto-assigns ownership
+    // (required since diskdb ownership enforcement — a3d39f0e).
+    await apiDeployDiskdb(baseURL, DISKDB_NODE, freePort());
   });
 
   // No afterAll — the beforeAll reset of the next test file (or the

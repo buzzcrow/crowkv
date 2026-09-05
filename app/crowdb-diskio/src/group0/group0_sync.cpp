@@ -7,6 +7,7 @@
 #include "disk/block_disk.h"
 #include "disk/mem_disk.h"
 #include "disk/null_disk.h"
+#include "engine/uring/uring_engine.h"
 
 #include <folly/dynamic.h>
 #include <folly/json.h>
@@ -209,6 +210,16 @@ void Group0Sync::reconcile_disks(const std::string &json)
             // Real block device.
             disk = std::make_shared<BlockDisk>(did, device_path, engine_, std::move(zones), true);
         }
+#ifdef CROWDB_HAVE_LIBURING
+        // Register the disk's fd with the uring for fd→pipeline routing.
+        // All disk types go through the uring submit path; unregistered
+        // fds fall back to pipeline 0 but their completions are not
+        // reliably delivered.
+        if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
+            uring_engine != nullptr && disk->fd() >= 0) {
+            uring_engine->uring().register_fd(disk->fd());
+        }
+#endif
         disk_set_->add(disk);
         std::printf("group-0: added disk {%llu,%llu} path=%s zones=%u\n", static_cast<unsigned long long>(did.high),
                     static_cast<unsigned long long>(did.low), device_path.empty() ? "(null)" : device_path.c_str(),
@@ -238,7 +249,7 @@ void Group0Sync::heartbeat()
 
     SyncCallbackCtx ctx;
     crowdb_svc_heartbeat_diskio(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), dg_ids_json.c_str(), "[]",
-                              on_ffi_complete, &ctx);
+                                on_ffi_complete, &ctx);
     if (!wait_for_ctx(ctx)) {
         std::fprintf(stderr, "warning: group-0 heartbeat timed out\n");
         return;
