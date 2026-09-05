@@ -15,13 +15,11 @@ complexity, and dependency. Before implementation, follow the
 
 ### High Priority
 
-- **[R131](R131-diskdb-allocate-performance.md)** — diskdb allocation
-  throughput — Area: diskdb / client / kv / RPC — Trace and measure the
-  complete allocation path, isolate bitmap, persistence, scheduling,
-  serialization, transport, consensus, WAL, and storage costs, then tune
-  the confirmed bottlenecks. Target at least 400K one-unit allocations/s
-  for a sustained 20-second mem-block run on the Linux reference host,
-  with zero errors and exact space accounting.
+- **[R98](R98-chunkdb-performance-optimization.md)** — ChunkDB allocation
+  performance — Area: chunkdb / diskdb / kv / RPC — Measure and tune one-strip
+  EC 8+4 allocation on a three-node co-located cluster with three data groups,
+  complete workflow metrics, exact accounting, and retained cross-process
+  logs.
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
   migration — Area: chunkdb / kv — Implement the full
   `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
