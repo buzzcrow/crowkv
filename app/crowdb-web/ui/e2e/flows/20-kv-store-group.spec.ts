@@ -11,13 +11,18 @@ test.describe('kv cluster · store + group CRUD', () => {
     await resetAll(baseURL!);
   });
 
-  test('creates stores, groups and replicas through the UI against a real deployed server', async ({ page, baseURL }) => {
-    // --- store + group creation chain (store 57, groups 570 / 580) ---
-    await step('store-group: setup', async () => {
-      await seedRackAndNode(baseURL!, 5, 5);
-      await deployNodeServer(baseURL!, 5, freePort(), freePort());
-    });
+  test.afterEach(async ({ baseURL }) => {
+    await Promise.all([5, 171, 172, 7, 8].map((id) => stopNodeServer(baseURL!, id)));
+  });
 
+  test('creates stores, groups and replicas through the UI against a real deployed server', async ({ page, baseURL }) => {
+    await step('store-group: setup servers', () => Promise.all([5, 171, 172].map(async (id) => {
+      await seedRackAndNode(baseURL!, id, id);
+      await deployNodeServer(baseURL!, id, freePort(), freePort());
+    })));
+    await clusterInit(baseURL!, [5]);
+
+    // --- store + group creation chain (store 57, groups 570 / 580) ---
     const chainApi = await apiContext(baseURL!);
     try {
       await step('store-group: create store+group UI', async () => {
@@ -25,7 +30,6 @@ test.describe('kv cluster · store + group CRUD', () => {
         await page.getByTestId('domain-kv').click();
         const aside = page.getByRole('complementary', { name: 'Cluster tree sidebar' });
 
-        await clusterInit(baseURL!, [5]);
         await aside.getByRole('button', { name: 'Add Store' }).click();
         await expect(page.getByRole('dialog', { name: 'Add KV Store' })).toBeVisible();
         await page.getByLabel('KV Store ID (numeric)').fill('57');
@@ -82,21 +86,11 @@ test.describe('kv cluster · store + group CRUD', () => {
       });
     } finally {
       await chainApi.dispose();
-      await step('store-group: teardown', () => stopNodeServer(baseURL!, 5));
     }
 
     // --- add a replica to an existing group (store 177, group 1770) ---
-    // Setup: two racks/nodes with deployed servers.
+    // Reuse deployed servers while the metadata node stays available.
     await step('store-group: setup replica', async () => {
-      await Promise.all([
-        seedRackAndNode(baseURL!, 171, 171),
-        seedRackAndNode(baseURL!, 172, 172),
-      ]);
-      await Promise.all([
-        deployNodeServer(baseURL!, 171, freePort(), freePort()),
-        deployNodeServer(baseURL!, 172, freePort(), freePort()),
-      ]);
-
       // Seed a store with an initial group on n17a.
       await createStore(baseURL!, 177, [171]);
       await addGroup(baseURL!, 177, 1770, 17700, [171]);
@@ -137,18 +131,19 @@ test.describe('kv cluster · store + group CRUD', () => {
       });
     } finally {
       await addReplicaApi.dispose();
-      await step('store-group: teardown replica', () => Promise.all([
-        stopNodeServer(baseURL!, 171),
-        stopNodeServer(baseURL!, 172),
-      ]));
     }
   });
 
   test('deletes a replica and a group through the UI and verifies the real backend', async ({ page, baseURL }) => {
+    // Keep node 7, which bootstraps group 0, alive through both deletion scenarios.
+    await step('del-replica-group: setup servers', () => Promise.all([7, 8].map(async (id) => {
+      await seedRackAndNode(baseURL!, id, id);
+      await deployNodeServer(baseURL!, id, freePort(), freePort());
+    })));
+    await clusterInit(baseURL!, [7]);
+
     // --- delete a replica (store 77, group 770, replica 7700) ---
     await step('del-replica-group: setup replica', async () => {
-      await seedRackAndNode(baseURL!, 7, 7);
-      await deployNodeServer(baseURL!, 7, freePort(), freePort());
       await createStore(baseURL!, 77, [7]);
       await addGroup(baseURL!, 77, 770, 7700, [7]);
     });
@@ -180,13 +175,10 @@ test.describe('kv cluster · store + group CRUD', () => {
       });
     } finally {
       await replicaApi.dispose();
-      await step('del-replica-group: teardown replica', () => stopNodeServer(baseURL!, 7));
     }
 
     // --- delete a group (store 88, group 880) ---
     await step('del-replica-group: setup group', async () => {
-      await seedRackAndNode(baseURL!, 8, 8);
-      await deployNodeServer(baseURL!, 8, freePort(), freePort());
       await createStore(baseURL!, 88, [8]);
       await addGroup(baseURL!, 88, 880, 8800, [8]);
     });
@@ -214,7 +206,6 @@ test.describe('kv cluster · store + group CRUD', () => {
       });
     } finally {
       await groupApi.dispose();
-      await step('del-replica-group: teardown group', () => stopNodeServer(baseURL!, 8));
     }
   });
 });

@@ -5,8 +5,6 @@
 import { test, expect } from '../fixtures/realBackend';
 import {
   addGroup,
-  createNode,
-  createRack,
   createStore,
   deployNodeServer,
   freePort,
@@ -73,85 +71,74 @@ test.describe('inspector · activity log', () => {
       // Verify an entry appears (the KV Put should be logged)
       await expect(inspector.getByText(/KV Put/i)).toBeVisible({ timeout: 10_000 });
 
-      // Click Clear log — wait for the button to be enabled, then click.
-      // force:true bypasses actionability checks (toast overlays, etc.)
-      // while still dispatching a real pointer event through React's
-      // synthetic event system.
+      // Click through transient toast overlays after checking the control is enabled.
       const clearBtn = inspector.getByRole('button', { name: /clear log/i });
       await expect(clearBtn).toBeEnabled({ timeout: 10_000 });
-      await clearBtn.click({ force: true });
+      await clearBtn.evaluate((button: HTMLButtonElement) => button.click());
 
       // Verify entries are removed
       await expect(inspector.getByText('No activity yet.')).toBeVisible({ timeout: 10_000 });
-    } finally {
-      await step('inspector: stop server 32', () => stopNodeServer(baseURL!, 32));
-    }
 
-    // --- async op feedback: ping / restart / stop toasts + activity entries ---
-    await step('inspector: resetAll', () => resetAll(baseURL!));
-    // Sequential: createNode depends on createRack being committed first.
-    await step('inspector: create rack/node', async () => {
-      await createRack(baseURL!, { id: 47, name: 'r47' });
-      await createNode(baseURL!, { id: 47, rack_id: 47 });
-    });
-    await step('inspector: deploy server 47', () => deployNodeServer(baseURL!, 47, freePort(), freePort()));
-
-    try {
-      await step('inspector: goto', () => page.goto('/'));
+      // Reuse the initialized server for lifecycle activity; stop it after all assertions.
       await page.getByTestId('domain-cluster').click();
-      const nodeItem = page.getByRole('treeitem').filter({ hasText: 'N-47' });
-      await expect(nodeItem).toBeVisible({ timeout: 10_000 });
+      await expect(nodeItem).toBeVisible({ timeout: 3_000 });
 
       // Ping — on the node context menu.
       await step('inspector: ping', async () => {
         await nodeItem.click({ button: 'right' });
+        const pingResponse = page.waitForResponse((response) => response.url().includes('/nodes/32/ping'));
         await page.getByRole('menuitem', { name: /ping/i }).click();
+        const response = await pingResponse;
+        expect(response.ok(), await response.text()).toBeTruthy();
+        expect(await response.json()).toMatchObject({ ok: true });
       });
 
-      const pingToast = page.getByRole('alert').filter({ hasText: /ping/i });
-      await expect(pingToast).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByRole('alert').filter({ hasText: /ping/i })).toBeVisible({ timeout: 10_000 });
+      await expect(inspector.getByText(/ping node/i)).toBeVisible({ timeout: 3_000 });
 
       // Restart and Stop are on the KV server context menu. KV-xxx
       // tree items are in the Cluster domain under their physical node.
       await page.getByTestId('domain-cluster').click();
-      const serverItem = page.getByRole('treeitem').filter({ hasText: 'KV-47' });
+      const serverItem = page.getByRole('treeitem').filter({ hasText: 'KV-32' });
       await expect(serverItem).toBeVisible({ timeout: 5_000 });
 
-      // Restart — should show a success toast
+      // Restart — verify the deployed process returned by the real backend.
       await step('inspector: restart', async () => {
         await serverItem.click({ button: 'right' });
         const restartResponse = page.waitForResponse((r: any) => r.url().includes('/server/restart'));
         await page.getByRole('menuitem', { name: /restart CrowDB Storage/i }).click();
-        await restartResponse;
+        const response = await restartResponse;
+        expect(response.ok(), await response.text()).toBeTruthy();
+        const result = await response.json();
+        expect(result.node_id).toBe(32);
+        expect(result.pid).toBeGreaterThan(0);
       });
+      await expect(page.getByRole('alert').filter({ hasText: /restart/i })).toBeVisible({ timeout: 10_000 });
 
-      const restartToast = page.getByRole('alert').filter({ hasText: /restart/i });
-      await expect(restartToast).toBeVisible({ timeout: 10_000 });
-
-      // Stop — should show a success toast
+      // Stop — verify the backend accepted the shutdown signal.
       await step('inspector: stop', async () => {
         await serverItem.click({ button: 'right' });
         const stopResponse = page.waitForResponse((r: any) => r.url().includes('/server/stop'));
         await page.getByRole('menuitem', { name: /stop CrowDB Storage/i }).click();
-        await stopResponse;
+        const response = await stopResponse;
+        expect(response.ok(), await response.text()).toBeTruthy();
+        const result = await response.json();
+        expect(result.sent).toBe(true);
       });
-
-      const stopToast = page.getByRole('alert').filter({ hasText: /stop/i });
-      await expect(stopToast).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByRole('alert').filter({ hasText: /stop/i })).toBeVisible({ timeout: 10_000 });
 
       // Verify all three operations appear in the activity log.
       // Switch back to Cluster domain to select the node.
       await page.getByTestId('domain-cluster').click();
-      await nodeItem.getByRole('button', { name: 'N-47' }).click();
-      const inspector = page.locator('aside[aria-label="Entity inspector"]');
-      await expect(inspector).toBeVisible({ timeout: 10_000 });
+      await nodeItem.getByRole('button', { name: 'N-32' }).click();
+      await expect(inspector).toBeVisible({ timeout: 3_000 });
       await inspector.getByRole('tab', { name: 'Activity' }).click();
 
       await expect(inspector.getByText(/ping node/i)).toBeVisible({ timeout: 10_000 });
       await expect(inspector.getByText(/restart CrowDB Storage/i)).toBeVisible({ timeout: 10_000 });
       await expect(inspector.getByText(/stop CrowDB Storage/i)).toBeVisible({ timeout: 10_000 });
     } finally {
-      await step('inspector: stop server 47', () => stopNodeServer(baseURL!, 47));
+      await step('inspector: stop server 32', () => stopNodeServer(baseURL!, 32));
     }
   });
 

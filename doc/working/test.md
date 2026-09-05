@@ -109,7 +109,7 @@ Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = T
 | `test-console-shared` | 64  | 39.2 s | 9.36 s        | 188.91 s      | ✅              |
 | `test-console-cli`  | 17    | 69.4 s | 44.09 s       | 27.72 s       | ⚠️ (5 ignored)  |
 | `test-console-server` | 74  | 50.7 s | 42.72 s       | 107.02 s      | ✅              |
-| `test-console-ui`   | 138   | 165.7 s | 270.0 s      | 366.0 s       | ✅              |
+| `test-console-ui`   | 138   | 165.7 s | 270.0 s      | 270.0 s       | ✅              |
 
 ---
 
@@ -146,96 +146,184 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 ## Console UI E2E (`test-console-ui`) — 2026-09-05
 
 Source: `app/crowdb-web/ui/e2e/`. 138 tests (84 Vitest + 54 Playwright),
-~6.1 min (single worker, real backend + real `crowdb-kv-server` subprocess,
+~4.5 min (single worker, real backend + real `crowdb-kv-server` subprocess,
 system Chrome). All 54 Playwright tests pass; 0 failures.
 
-### Top 10 slowest Playwright tests (per-test wall-clock, 2026-09-05)
+### Slowest Playwright tests (per-test wall-clock, 2026-09-05)
 
-| #  | Duration | Spec:line | Test |
-| -- | -------- | --------- | ---- |
-| 1  | 41.3 s   | `01-shell-ui-behaviors:31` | dialog defaults, cancel, and tree interactions |
-| 2  | 34.5 s   | `20-kv-store-group:147` | deletes a replica and a group through the UI and verifies the real backend |
-| 3  | 33.3 s   | `40-inspector-activity:43` | records mutations and async operations, and clear empties the log |
-| 4  | 31.6 s   | `11-cluster-server-lifecycle:160` | ping, restart, and stop server via context menu |
-| 5  | 19.1 s   | `21-kv-reconfig:254` | stopping a non-leader keeps quorum, stopping the leader triggers reelection |
-| 6  | 17.1 s   | `13-todo-ui-behavior:28` | creates three fully-enabled nodes and keeps derived DiskDB listeners disjoint |
-| 7  | 14.2 s   | `31-kv-ops-advanced:93` | prefix/selected/inline delete + copy, load more, all-groups mode, auto-scan toggle |
-| 8  | 12.3 s   | `90-flow-full-chain:20` | rack → node → server → store → group → replica → kv, both views |
-| 9  | 10.9 s   | `50-chunk-capacity-disk-group:427` | assign disk-group to diskdb via UI (owner + bind) |
-| 10 | 8.0 s    | `13-todo-ui-behavior:267` | closes the node dialog and preserves KV when DiskDB deployment fails |
+| Duration | Spec:line | Test |
+| -------- | --------- | ---- |
+| 41.4 s   | `01-shell-ui-behaviors:31` | dialog defaults, cancel, and tree interactions |
+| 20.1 s   | `13-todo-ui-behavior:28` | creates three fully-enabled nodes and keeps derived DiskDB listeners disjoint |
+| 12.4 s   | `90-flow-full-chain:20` | rack → node → server → store → group → replica → kv, both views |
+| 10.9 s   | `50-chunk-capacity-disk-group:427` | assign disk-group to diskdb via UI (owner + bind) |
+| 9.2 s    | `21-kv-reconfig:254` | stopping a non-leader keeps quorum, stopping the leader triggers reelection |
 
 ### Slow steps (>= 5 s, from `stepTimer` instrumentation)
 
 | Duration  | Spec | Step label |
 | --------- | ---- | ---------- |
 | 31.4 s    | `01-shell-ui-behaviors` | `shell: create nodes` |
-| 31.9 s    | `20-kv-store-group` | `del-replica-group: setup group` |
-| 15.3 s    | `11-cluster-server-lifecycle` | `ping-restart-stop: restart` |
-| 15.0 s    | `11-cluster-server-lifecycle` | `ping-restart-stop: teardown` |
-| 15.2 s    | `40-inspector-activity` | `inspector: restart` |
-| 14.7 s    | `40-inspector-activity` | `inspector: stop server 47` |
-| 6.2 s     | `21-kv-reconfig` | `reelect: openKvPanel` |
-| 5.9 s     | `21-kv-reconfig` | `quorum: openKvPanel` |
-| 5.2 s     | `01-shell-ui-behaviors` | `shell: Add Group dialog` |
+| 9.1 s     | `13-todo-ui-behavior` | `todo-ui: create logical and physical test data` |
+| 5.3 s     | `01-shell-ui-behaviors` | `shell: Add Group dialog` |
 
-### Current issues to investigate (2026-09-05)
+### E2E runtime review (2026-09-05)
 
-Prioritized list of slow / flaky items for improvement:
+The tables above reflect the latest full-suite run after the initial E2E
+runtime changes. A follow-up isolated run reduced `01-shell-ui-behaviors:31`
+from 41.4 seconds to 10.1 seconds; that result still needs confirmation in the
+next full-suite run. Each change preserves the original assertions and
+coverage; setup/teardown ordering, readiness checks, and click dispatch were
+adjusted.
 
-1. **`01-shell-ui-behaviors:31` (41.3 s)** — `shell: create nodes` (31.4 s)
-   dominates: the test creates 17 rack/node pairs via UI dialogs to test
-   dialog defaults and cancel behavior. Each node creation involves a
-   dialog fill + API call + tree re-render. Consider splitting into
-   smaller tests or using API seeding for the bulk nodes and testing
-   dialog behavior on just 1–2 nodes.
+Changes are confined to six E2E specs:
 
-2. **`20-kv-store-group:147` (34.5 s)** — `del-replica-group: setup group`
-   (31.9 s) sets up a 3-replica group with leader election wait. The
-   `setup group` step includes `createStore` + `addGroup` + `addReplica`
-   × 2 + `waitForLeader`, each paying network + consensus round-trip
-   costs. Consider batching or pre-initializing the cluster.
+- `01-shell-ui-behaviors`: keep the dedicated racks/nodes 211–213, but create
+  them before stopping the metadata servers. Wait for the real group-0 leader
+  before submitting the Add Group dialog and validate its response. This
+  avoids sysdata retry stalls while preserving dialog defaults, candidate
+  lists, cancellation, multi-node group creation, and tree interactions.
+- `11-cluster-server-lifecycle`: initialize group 0 before the
+  ping/restart/stop flow. The preceding deployment test still covers
+  stopping a server before cluster initialization. Removes two 15-second
+  waits from keepalive registration against an unavailable group-0 endpoint.
+- `20-kv-store-group`: give each test local setup and cleanup. The creation
+  test deploys nodes 5, 171, 172; the deletion test deploys nodes 7, 8.
+  Each initializes group 0 and keeps its metadata node alive through all
+  scenarios. Previously, later metadata writes retried the endpoint of a
+  server stopped by an earlier scenario for about 32 seconds.
+- `31-kv-ops-advanced`: check that Scan and inline Delete are enabled,
+  then dispatch their DOM clicks through transient toast overlays. Preserve
+  real handlers, requests, dialogs, and table assertions. Add scan/delete
+  response body checks and verify the inline-deleted key disappears.
+- `40-inspector-activity`: reuse initialized node 32 for ping/restart/stop
+  after checking KV mutation logging and Clear. Remove the second
+  deployment, intermediate reset, and page reload. Keep the success-toast and
+  persistent activity assertions, and add successful API response-body checks.
+  Check Clear is enabled and dispatch its click through overlays.
+- `10-cluster-rack-node`: after the API confirms DiskDB registration,
+  refresh the UI before asserting the DiskDB service appears in the cluster
+  tree. Removes a race between asynchronous registration and the node
+  dialog's earlier refresh without changing coverage.
 
-3. **`40-inspector-activity:43` (33.3 s)** — `inspector: restart` (15.2 s)
-   + `inspector: stop server 47` (14.7 s). Each server restart/stop
-   involves SIGTERM → graceful WAL flush → engine close → process exit
-   (~700 ms) plus the inspector activity log polling for the async
-   operation to complete. The WAL flush on shutdown is forced even with
-   `--no-fsync` — skipping it in test mode would cut ~700 ms per stop.
+No production code, fsync behavior, timeout, retry, worker count, or test
+count was changed.
 
-4. **`11-cluster-server-lifecycle:160` (31.6 s)** — `ping-restart-stop:
-   restart` (15.3 s) + `teardown` (15.0 s). Same root cause as #3: server
-   restart/stop pays the full graceful-shutdown cost. The teardown stops
-   all deployed servers in parallel but each still takes ~700 ms.
+| Test | Before | After |
+| --- | --- | --- |
+| Shell dialog/tree (`01:31`) | 41.4 s | 10.1 s (isolated) |
+| Server ping/restart/stop (`11:160`) | 31.6 s | 2.7 s |
+| Store/group/replica creation (`20:18`) | 5.1 s | 6.6 s |
+| Replica/group deletion (`20:147`) | 34.5 s | 5.3 s |
+| Advanced KV operations (`31:98`) | 14.2 s | 7.7 s |
+| Inspector mutation/lifecycle (`40:43`) | 33.3 s | 3.7 s |
+| Full suite | 6.1 min | 4.5 min |
 
-5. **`21-kv-reconfig:254` (19.1 s)** — `reelect: openKvPanel` (6.2 s) +
-   `quorum: openKvPanel` (5.9 s). `page.goto('/')` + KV panel init after
-   node stop/restart. The full page reload is required because
-   `selectOption` hangs on stale options after node deletions. Consider
-   partial DOM refresh instead of full `page.goto('/')`.
+### Remaining runtime investigations
 
-6. **`13-todo-ui-behavior:28` (17.1 s)** — three sequential `add node`
-   UI dialogs (3 s each) + `create logical and physical test data`
-   (4.6 s). Each node add involves a dialog with diskdb deploy. The
-   sequential nature is inherent (each node build depends on the prior
-   tree state).
+- **`13-todo-ui-behavior:28` (20.1 s)** — three sequential `add node` UI
+  dialogs (~3 s each) + `create logical and physical test data` (9.1 s).
+  Each node add deploys both KV and DiskDB services. The sequential nature
+  is inherent (each node build depends on the prior tree state). Retain
+  all three nodes for disjoint-listener coverage.
+- **`90-flow-full-chain:20` (12.4 s)** — `full-chain: add store 188 UI`
+  (3.9 s). The UI add-store step pays the cluster-init + leader-election
+  cost. Replacing with API seeding would remove the full-chain coverage
+  this spec is intended to provide.
+- **`50-chunk-capacity-disk-group:427` (10.9 s)** — `assign disk-group to
+  diskdb via UI` deploys diskdb via API, polls for instance registration,
+  then creates a DG + disk + owner + bind through the UI. The diskdb
+  deploy + registration poll dominates (~5 s). Setup already uses the API;
+  preserve the UI owner/bind operations and real capacity observation.
+- **`21-kv-reconfig:254` (9.2 s)** — `quorum: openKvPanel` and
+  `reelect: openKvPanel` each pay the full page reload cost. Replacing
+  with the header Refresh action can race the stores request and hang
+  until the test timeout; keep `page.goto('/')` for now.
 
-7. **`31-kv-ops-advanced:93` (14.2 s)** — `kv: scan` (3.2 s) +
-   `kv: inline delete` (3.8 s) + 6 sub-assertions. Scan/delete API calls
-   + table re-renders compound; both are O(n) in key count.
+### Non-UI slow tests (2026-09-05)
 
-8. **`90-flow-full-chain:20` (12.3 s)** — `full-chain: add store 188 UI`
-   (4.0 s). The UI add-store step pays the cluster-init + leader-election
-   cost. The test exercises the full rack→node→server→store→group→replica
-   chain in one test.
+Slowest individual tests from the Rust and C++ suites measured in the same
+run as the table above. C++ ctest reports per-test wall-clock; Rust reports
+per-test-binary wall-clock (individual test functions are not timed by the
+default harness).
 
-9. **`50-chunk-capacity-disk-group:427` (10.9 s)** — `assign disk-group
-   to diskdb via UI` deploys diskdb via API, polls for instance
-   registration, then creates a DG + disk + owner + bind through the UI.
-   The diskdb deploy + registration poll dominates (~5 s).
+| Duration | Suite | Test / binary |
+| -------- | ----- | ------------- |
+| 53.1 s   | `test-tree-ct` | `Gc.CompactSparseBlocksRespectsByteBudget` |
+| 45.4 s   | `test-kv-core` | `group_test.rs` (Paxos group consensus tests) |
+| 31.2 s   | `test-tree-ct` | `Gc.CompactSparseBlocksMaintainsDataIntegrity` |
+| 30.0 s   | `test-diskio-client` | `disk_io_full_test.rs` (full disk IO E2E) |
+| 20.4 s   | `test-console-server` | `lifecycle_routes_test.rs` (deploy/restart/stop) |
+| 18.0 s   | `test-console-shared` | `lib.rs` (console-shared unit tests) |
+| 16.3 s   | `test-console-cli` | `lifecycle_cli_test.rs` (CLI lifecycle commands) |
+| 15.3 s   | `test-console-server` | `rolling_upgrade_test.rs` (mixed-version cluster) |
+| 15.2 s   | `test-console-server` | `ops_migration_test.rs` (ops migration routes) |
+| 13.8 s   | `test-tree-ct` | `CompactSparseBlocksFailureInjectionTest.ReopenFromPriorAnchorIsClean/(0,true)` |
+| 12.7 s   | `test-console-server` | `cluster_restart_incremental_test.rs` (restart cycles) |
+| 11.8 s   | `test-kv-server` | `recovery_failure_test.rs` (failure recovery) |
+| 11.7 s   | `test-console-server` | `replica_leader_removal_test.rs` (leader removal) |
+| 11.1 s   | `test-tree-ct` | `Persist.BlockCompactionGapFiltering` |
+| 10.7 s   | `test-diskdb` | `diskdb_e2e_test.rs` (DiskDB E2E) |
+| 10.4 s   | `test-kv-server` | `cluster_e2e_test.rs` (cluster E2E) |
 
-10. **`stopNodeServer` teardown across all tests** — each server shutdown
-    takes ~700 ms (SIGTERM → graceful WAL flush → engine close → exit).
-    Tests in `21`/`22` stop 3–5 servers in parallel (~2.2 s per test).
-    ~15 tests × 2.2 s = ~33 s of total teardown. Options: skip WAL flush
-    on test-mode shutdown, or use `resetAll` in `finally` blocks (one
-    API call vs N).
+Hot spots (root-cause analysis, 2026-09-05):
+
+- **`test-tree-ct` GC/compact tests (53 + 31 s)** — both tests write only
+  200 keys (25 KiB data) but run multiple full disk-durable `snapshot()`
+  + `compact_sparse_blocks()` passes. Each `snapshot()` fsyncs every dirty
+  block file twice (`BlockPageStore::sync`, `persist.cpp:974–1081`). The
+  bottleneck is `SyncMode::kFull` (default), not the GC logic itself.
+  `SyncMode::kSkip` is already documented as "tests/CI only" in
+  `page_store.h:31–35` but not used in these tests. Setting it after
+  `open_blocks()` would eliminate the fsync cost while exercising the
+  same compaction code paths. One-line fix per test in
+  `lib/crowdb-tree/tests/unit/gc_test.cpp:253,306`.
+- **`test-kv-core` group_test.rs (45 s)** — 98 in-process Paxos tests
+  over loopback RPC. No subprocess spawning. The time is in timeout-based
+  polling loops: `wait_for_leader` (5 s ceiling, 5 ms poll), `poll_for_value`
+  (5 s ceiling, 10 ms poll), and convergence checks (5–15 s ceilings).
+  Actual events resolve in milliseconds. Some tests use relaxed election
+  config (`election_min_ms: 500`, `election_max_ms: 1000`). The heaviest
+  tests are `full_restart_delete` (60 keys, 15 s timeouts), `r65_replication`
+  (50 puts + 50× convergence, 1 MB value), and `t1_early_ack_crash` (multiple
+  10 s leader waits). Lowering timeout ceilings from 5–15 s to 2–3 s and
+  reducing `r65` data volume (50→10 puts) would cut significantly.
+- **`test-diskio-client` disk_io_full_test.rs (30 s)** — 1 test, 3
+  subprocesses (1 kv-server + 2 diskio). Two backends (`NullDisk`,
+  `MemDisk`) run sequentially. Each pays a 2000 ms group-0 sync wait
+  (test harness override, `diskio.rs:200`) before disk discovery. The
+  concurrent benchmark runs 4 threads × 100 cycles × 4096 B write+read
+  per backend = 800 RPCs per backend. `BENCH_CYCLES=100` is excessive for
+  E2E smoke; 25 would suffice. Shortening sync interval to 200 ms and
+  reducing bench cycles would cut ~15 s.
+- **`test-console-server` lifecycle/rolling-upgrade (20 + 15 + 15 s)** —
+  all dominated by real `crowdb-kv-server` subprocess spawns and
+  `stop_pid_with_timeout(5s)` cleanup. `lifecycle_routes_test.rs` spawns
+  ~6 processes with 4× 5 s stop timeouts. `rolling_upgrade_test.rs` does
+  6 spawns + 3 kills with 10–15 s leader election polls × 3.
+  `ops_migration_test.rs` spawns 1 server per test (5 tests) with 5 s
+  stop timeout each. Sharing servers across tests or shortening stop
+  timeout in test mode would help.
+- **`test-console-shared` lib.rs (18 s)** — 56 unit tests, no sleeps,
+  no spawns, no timeouts. The 18 s is **build/link time + tokio runtime
+  startup** (24 `#[tokio::test]` functions each start a runtime). Not a
+  runtime bottleneck; no action needed.
+- **`test-console-cli` lifecycle_cli_test.rs (16 s)** — 1 test, 10 CLI
+  subprocess invocations + 1 kv-server. Server bootstrap waits 30 s
+  readiness + 5 s leader election. `kv server restart` and `stop` each
+  pay 15 s stop timeout + 30 s readiness. Reducing CLI invocations or
+  batching assertions would cut ~5 s.
+- **`test-kv-server` recovery_failure_test.rs (12 s)** — 1 test spawns a
+  full 3-node cluster just to assert `ZoneLoader` rejects a malformed
+  disk group. Over-provisioned: an in-process single-node or mock would
+  cut most of the 12 s. (Note: this file is in `crowdb-diskdb/tests/`,
+  not `crowdb-kv-server/tests/`.)
+- **`test-diskdb` diskdb_e2e_test.rs (11 s)** — 5 tests, 15 kv-server
+  spawns (3 per test). `allocate_all_free_all` does 1536 individual
+  `allocate_block` RPC calls against a real cluster. Sharing clusters
+  across tests or reducing allocation count would help.
+- **`test-kv-server` cluster_e2e_test.rs (10 s)** — 6 tests, 20 kv-server
+  spawns. `--election-profile e2e` uses 300–600 ms election timeouts.
+  `wait_for_stable_leader` called 3× in the 5-node test, each with 800 ms
+  `stable_for` delay. Sharing clusters across tests where topology allows
+  would reduce spawn overhead.

@@ -13,6 +13,7 @@ import {
   freePort,
   freePortRange,
   resetAll,
+  waitForLeader,
 } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
 
@@ -115,6 +116,7 @@ test.describe('todo-ui behavior · service deployment and view ownership', () =>
 
       await step('todo-ui: create logical and physical test data', async () => {
         await createStore(baseURL!, STORE_ID, NODE_IDS);
+        await waitForLeader(baseURL!, 0, 0, 15_000);
         await addGroup(baseURL!, STORE_ID, GROUP_ID, REPLICA_ID, [NODE_IDS[0]]);
         // Wait for the diskdb instance to register with group-0 before
         // addDiskGroup (auto-assign owner requires a live diskdb instance).

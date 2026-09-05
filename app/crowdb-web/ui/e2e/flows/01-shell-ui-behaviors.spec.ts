@@ -50,6 +50,7 @@ test.describe('shell · UI behaviors', () => {
       deployNodeServer(baseURL!, 203, freePort(), freePort()),
     ]));
     await step('shell: create store', () => createStore(baseURL!, 207, [201, 202]));
+    await step('shell: wait for group-0 leader', () => waitForLeader(baseURL!, 0, 0, 15_000));
 
     const api = await apiContext(baseURL!);
     try {
@@ -99,7 +100,8 @@ test.describe('shell · UI behaviors', () => {
         const createGroupResp = page.waitForResponse((r: any) =>
           r.request().method() === 'POST' && r.url().includes('/api/stores/207/groups'));
         await addGroupDialog.getByRole('button', { name: /create group/i }).click();
-        await createGroupResp;
+        const response = await createGroupResp;
+        expect(response.ok(), await response.text()).toBeTruthy();
       });
 
       const expectedReplicaAfterGroup = String(Number(expectedReplicaId) + 2);
@@ -133,6 +135,19 @@ test.describe('shell · UI behaviors', () => {
         expect(remainingValues).not.toEqual(expect.arrayContaining(['201', '202', '203']));
         await remainingReplicaDialog.getByRole('button', { name: 'Cancel' }).click();
       });
+
+      // Create the dedicated tree-interaction fixtures while group 0 is still
+      // available. The assertions remain below, after the dialog-cancel checks.
+      await step('shell: create tree racks', () => Promise.all([
+        createRack(baseURL!, { id: 211, name: 'Rack Twenty One A' }),
+        createRack(baseURL!, { id: 212, name: 'Rack Twenty One B' }),
+        createRack(baseURL!, { id: 213, name: 'Rack Twenty One C' }),
+      ]));
+      await step('shell: create tree nodes', () => Promise.all([
+        createNode(baseURL!, { id: 211, rack_id: 211 }),
+        createNode(baseURL!, { id: 212, rack_id: 212 }),
+        createNode(baseURL!, { id: 213, rack_id: 213 }),
+      ]));
     } finally {
       await api.dispose();
       await step('shell: stop servers', () => Promise.all([
@@ -170,17 +185,6 @@ test.describe('shell · UI behaviors', () => {
     }
 
     // --- tree chevron vs text click behavior ---
-    await step('shell: create racks', () => Promise.all([
-      createRack(baseURL!, { id: 211, name: 'Rack Twenty One A' }),
-      createRack(baseURL!, { id: 212, name: 'Rack Twenty One B' }),
-      createRack(baseURL!, { id: 213, name: 'Rack Twenty One C' }),
-    ]));
-    await step('shell: create nodes', () => Promise.all([
-      createNode(baseURL!, { id: 211, rack_id: 211 }),
-      createNode(baseURL!, { id: 212, rack_id: 212 }),
-      createNode(baseURL!, { id: 213, rack_id: 213 }),
-    ]));
-
     await step('shell: goto', () => page.goto('/'));
     await page.getByTestId('domain-cluster').click();
     const rack21a = page.getByRole('treeitem').filter({ hasText: 'R-211 (Rack Twenty One A)' });

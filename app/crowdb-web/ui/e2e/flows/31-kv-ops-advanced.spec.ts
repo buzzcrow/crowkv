@@ -37,8 +37,13 @@ async function putKey(page: any, key: string, value: string) {
 async function scanAndRefresh(page: any) {
   await step('kv: scan', async () => {
     const scanResponse = page.waitForResponse((r: any) => r.url().includes('/kv/scan'));
-    await page.getByRole('button', { name: /^Scan$/ }).click();
-    await scanResponse;
+    // Success toasts can cover this control; dispatch its click after checking it is enabled.
+    const scan = page.getByRole('button', { name: /^Scan$/ });
+    await expect(scan).toBeEnabled();
+    await scan.evaluate((button: HTMLButtonElement) => button.click());
+    const response = await scanResponse;
+    expect(response.ok(), await response.text()).toBeTruthy();
+    expect(await response.json()).toMatchObject({ items: expect.any(Array) });
     await expect(page.getByTestId('kv-scan-table')).toBeVisible({ timeout: 3_000 });
   });
 }
@@ -147,13 +152,20 @@ test.describe('kv ops · advanced deletes, load-more, all-groups, demo', () => {
     await scanAndRefresh(page);
     await expect(page.getByTestId('kv-scan-table').getByText('adv-inline')).toBeVisible({ timeout: 3_000 });
     await step('kv: inline delete', async () => {
-      await page.getByTestId('inline-delete-adv-inline').click();
+      // The preceding put toast can cover the row action.
+      const inlineDelete = page.getByTestId('inline-delete-adv-inline');
+      await expect(inlineDelete).toBeEnabled();
+      await inlineDelete.evaluate((button: HTMLButtonElement) => button.click());
       const inlineDialog = page.getByRole('dialog');
       await expect(inlineDialog).toBeVisible({ timeout: 3_000 });
       const inlineDeleteResponse = page.waitForResponse((r: any) => r.url().includes('/kv/delete'));
       await inlineDialog.getByRole('button', { name: 'Delete' }).click();
-      await inlineDeleteResponse;
+      const response = await inlineDeleteResponse;
+      expect(response.ok(), await response.text()).toBeTruthy();
+      expect(await response.json()).toMatchObject({ ok: true });
     });
+
+    await expect(page.getByTestId('kv-scan-table').getByText('adv-inline', { exact: true })).toHaveCount(0);
 
     // Copy: put a key, get it, verify copy button exists
     await putKey(page, 'adv-copy', 'copy-val');

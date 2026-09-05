@@ -3,7 +3,7 @@
 // Baseline: 9s (2026-08-16)
 
 import { test, expect } from '../fixtures/realBackend';
-import { apiContext, createNode, createRack, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer } from '../fixtures/consoleSetup';
+import { apiContext, clusterInit, createNode, createRack, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
 
 test.describe('cluster · server lifecycle', () => {
@@ -163,6 +163,7 @@ test.describe('cluster · server lifecycle', () => {
       await createRack(baseURL!, { id: 27, name: 'r27' });
       await createNode(baseURL!, { id: 27, rack_id: 27 });
       await deployNodeServer(baseURL!, 27, freePort(), freePort());
+      await clusterInit(baseURL!, [27]);
     });
 
     try {
