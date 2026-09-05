@@ -70,8 +70,8 @@ request.{method}.errors.c
 ```
 
 Methods include `allocate_chunk`, `append_chunk`, `seal_chunk`,
-`delete_chunk`, `query_chunk`, `list_chunks`, `update_chunk_strip`, and
-`compact_chunk`. Histogram count/rate is the completed request count and load
+`delete_chunk`, `delete_chunk_range`, `query_chunk`, `list_chunks`, and
+`update_chunk_strip`. Histogram count/rate is the completed request count and load
 type; the histogram supplies latency, the gauge exposes current load, and the
 counter separates failed outcomes.
 

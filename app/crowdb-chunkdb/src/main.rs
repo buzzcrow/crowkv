@@ -11,6 +11,7 @@ use clap::Parser;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
+use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
 use crowdb_chunkdb::range_guard::RangeGuard;
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
@@ -19,6 +20,7 @@ use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
+use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_kv_client::{
     ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
     WatchNotifyClient,
@@ -69,6 +71,10 @@ struct Cli {
     /// Number of rotated log files to keep. Default: 5.
     #[arg(long, default_value_t = crowdb_common::logging::DEFAULT_LOG_MAX_FILES)]
     log_max_files: usize,
+
+    /// Metrics flush interval in seconds. Zero disables metrics logging.
+    #[arg(long, default_value_t = 5)]
+    metrics_interval: u64,
 
     /// Also print logs to console (in addition to file logging).
     #[arg(short = 'l', long)]
@@ -130,6 +136,17 @@ async fn main() {
     let config = load_config(&args);
     info!(config = ?config, "crowdb-chunkdb starting");
 
+    let (workflow_metrics, mut metrics_runner) = create_metrics(
+        args.metrics_interval,
+        &log_dir,
+        args.log_max_file_mb,
+        args.log_max_files,
+    );
+    if let Some(runner) = &mut metrics_runner {
+        runner.start();
+    }
+    let workflow_metrics = Arc::new(workflow_metrics);
+
     let http_listen_addr: SocketAddr = config
         .server
         .http_listen_addr
@@ -142,9 +159,10 @@ async fn main() {
         .expect("valid rpc_listen_addr");
 
     // Build KV client for group-0 topology access.
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
-        config.server.kv_server_mgmt_seeds.clone(),
-    )));
+    let mut kv_config = ClientConfig::new(config.server.kv_server_mgmt_seeds.clone());
+    kv_config.pool_size_per_endpoint = config.server.kv_pool_size;
+    kv_config.rpc_workers = config.server.kv_rpc_workers;
+    let kv = Arc::new(CrowdbKvClient::new(kv_config));
     let hw = HardwareClient::from_shared(Arc::clone(&kv));
     let refresh_hw = HardwareClient::from_shared(Arc::clone(&kv));
     let watch = WatchNotifyClient::from_shared(Arc::clone(&kv));
@@ -250,12 +268,17 @@ async fn main() {
     });
 
     // Diskdb client pool + chunk allocator.
-    let pool = Arc::new(DiskdbClientPool::new(svc));
+    let pool = Arc::new(DiskdbClientPool::with_transport(
+        svc,
+        config.server.diskdb_pool_size,
+        config.server.diskdb_rpc_workers,
+    ));
     if let Err(error) = pool.refresh_endpoints().await {
         error!(%error, "initial diskdb discovery failed; refusing readiness");
         return;
     }
-    let allocator = Arc::new(ChunkAllocator::new(Arc::clone(&pool)));
+    let allocator =
+        Arc::new(ChunkAllocator::new(Arc::clone(&pool)).with_metrics(Arc::clone(&workflow_metrics)));
 
     // Per-chunk lock map + payload cache (R100).
     let lifecycle_metrics = Arc::new(LifecycleMetrics::new());
@@ -279,6 +302,7 @@ async fn main() {
         LifecycleHandler::new(Arc::clone(&store), allocator, cache)
             .with_range_guard(Arc::clone(&range_guard))
             .with_locks(Arc::clone(&lock_map))
+            .with_metrics(Arc::clone(&workflow_metrics))
             .with_allow_unsafe_ec(config.placement.allow_unsafe_ec),
     );
     match handler.reconcile_pending_chunks().await {
@@ -292,7 +316,11 @@ async fn main() {
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to ChunkdbRpcService handlers.
     let rpc_rt_handle = tokio::runtime::Handle::current();
-    let rpc_service = Arc::new(ChunkdbRpcService::new(Arc::clone(&handler), rpc_rt_handle));
+    let rpc_service = Arc::new(ChunkdbRpcService::new(
+        Arc::clone(&handler),
+        Arc::clone(&workflow_metrics),
+        rpc_rt_handle,
+    ));
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, args.rpc_workers));
     rpc_server
         .listen(
@@ -320,7 +348,33 @@ async fn main() {
     if let Some(h) = keepalive_handle {
         let _ = h.await;
     }
+    if let Some(runner) = &mut metrics_runner {
+        runner.stop().await;
+    }
     info!("crowdb-chunkdb stopped");
+}
+
+fn create_metrics(
+    interval_secs: u64,
+    log_dir: &str,
+    max_file_mb: usize,
+    max_files: usize,
+) -> (ChunkdbMetrics, Option<MetricsRunner>) {
+    if interval_secs == 0 {
+        let mut registry = MetricsRegistry::new();
+        return (ChunkdbMetrics::register(&mut registry), None);
+    }
+    let file = crowdb_common::logging::open_metrics_log(log_dir, "crowdb-chunkdb", max_file_mb, max_files)
+        .expect("failed to open metrics log file");
+    let runner = MetricsRunner::new(file, interval_secs);
+    let metrics = {
+        let mut registry = runner
+            .registry()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ChunkdbMetrics::register(&mut registry)
+    };
+    (metrics, Some(runner))
 }
 
 /// Periodic sweep loop — reaps idle chunk locks.

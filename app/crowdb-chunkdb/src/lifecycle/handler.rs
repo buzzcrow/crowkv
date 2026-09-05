@@ -15,6 +15,7 @@ use quick_cache::sync::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
+use crowdb_common::metrics::LatencyHistogram;
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, StripType as ProtoStripType,
 };
@@ -22,6 +23,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::generate_chunk_id;
 
 use crate::allocator::{AllocError, ChunkAllocator, StripAllocType};
+use crate::metrics::ChunkdbMetrics;
 use crate::metrics::LifecycleMetrics;
 use crate::range_guard::RangeGuard;
 use crate::routing::hash_to_bucket;
@@ -108,6 +110,39 @@ pub struct LifecycleHandler {
     /// configured (no lifecycle section in config).
     locks: Option<Arc<ChunkLockMap>>,
     allow_unsafe_ec: bool,
+    metrics: Option<Arc<ChunkdbMetrics>>,
+}
+
+struct AllocationMetricGuard {
+    metrics: Option<Arc<ChunkdbMetrics>>,
+    success: bool,
+}
+
+impl AllocationMetricGuard {
+    fn new(metrics: Option<Arc<ChunkdbMetrics>>) -> Self {
+        if let Some(metrics) = &metrics {
+            metrics.allocate_inflight.inc();
+        }
+        Self {
+            metrics,
+            success: false,
+        }
+    }
+
+    fn mark_success(&mut self) {
+        self.success = true;
+    }
+}
+
+impl Drop for AllocationMetricGuard {
+    fn drop(&mut self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.allocate_inflight.dec();
+            if !self.success {
+                metrics.allocate_errors.inc();
+            }
+        }
+    }
 }
 
 impl LifecycleHandler {
@@ -120,6 +155,7 @@ impl LifecycleHandler {
             range_guard: None,
             locks: None,
             allow_unsafe_ec: false,
+            metrics: None,
         }
     }
 
@@ -141,6 +177,13 @@ impl LifecycleHandler {
     #[must_use]
     pub fn with_allow_unsafe_ec(mut self, allow: bool) -> Self {
         self.allow_unsafe_ec = allow;
+        self
+    }
+
+    /// Attach allocation workflow metrics.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<ChunkdbMetrics>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 
@@ -179,6 +222,7 @@ impl LifecycleHandler {
             parts.to_proto()
         });
         self.check_range(&id)?;
+        let mut allocation_guard = AllocationMetricGuard::new(self.metrics.clone());
 
         // Caller-supplied ID: acquire lock + existence check.
         // Auto-generated ID: skip lock (UUID collision negligible).
@@ -241,6 +285,7 @@ impl LifecycleHandler {
             strips.push(strip);
         }
 
+        let record_started = std::time::Instant::now();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
@@ -255,15 +300,11 @@ impl LifecycleHandler {
             strips,
             chunk_type: chunk_type as i32,
         };
-
-        // Persist a recoverable intent, commit blocks, then publish Active.
-        if let Err(error) = self.store.put_chunk(&chunk).await {
-            self.allocator.rollback_strips(&chunk.strips).await?;
-            return Err(error.into());
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_record_build, record_started);
         }
-        self.commit_strip_segments(&chunk.strips).await?;
-        chunk.state = ProtoChunkState::Active as i32;
-        self.store.put_chunk(&chunk).await?;
+
+        self.persist_allocated_chunk(&mut chunk).await?;
 
         // Update cache.
         if let Some(ref mut g) = guard {
@@ -275,7 +316,47 @@ impl LifecycleHandler {
             }
         }
         info!(chunk_id = ?id, strips = strip_count, "chunk allocated");
+        allocation_guard.mark_success();
         Ok(chunk)
+    }
+
+    async fn persist_allocated_chunk(&self, chunk: &mut Chunk) -> Result<(), LifecycleError> {
+        let init_started = std::time::Instant::now();
+        if let Err(error) = self.store.put_chunk(chunk).await {
+            self.allocator.rollback_strips(&chunk.strips).await?;
+            return Err(error.into());
+        }
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_kv_init_persist, init_started);
+        }
+
+        let commit_started = std::time::Instant::now();
+        self.commit_strip_segments(&chunk.strips).await?;
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_commit, commit_started);
+            let blocks = chunk.strips.iter().flat_map(extract_segments).count();
+            metrics
+                .allocate_commit_blocks
+                .inc_by(u64::try_from(blocks).unwrap_or(u64::MAX));
+        }
+
+        chunk.state = ProtoChunkState::Active as i32;
+        let active_started = std::time::Instant::now();
+        for attempt in 0..100_u32 {
+            match self.store.put_chunk(chunk).await {
+                Ok(()) => break,
+                Err(error) if attempt < 99 => {
+                    let backoff_ms = 1_u64.checked_shl(attempt).unwrap_or(u64::MAX).min(50);
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    drop(error);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_kv_active_persist, active_started);
+        }
+        Ok(())
     }
 
     /// Append strips to an active chunk.
@@ -756,4 +837,8 @@ fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Seg
         Some(Strip::EcStrip(ec)) => ec.segments.clone(),
         None => Vec::new(),
     }
+}
+
+fn observe_elapsed(metric: &LatencyHistogram, started: std::time::Instant) {
+    metric.observe(started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
 }

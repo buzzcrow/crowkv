@@ -14,15 +14,19 @@ use std::sync::Arc;
 use futures::future::join_all;
 use tracing::{info, warn};
 
+use crowdb_common::metrics::LatencyHistogram;
 use crowdb_protocol::chunkdb::rpc::StripType as ProtoStripType;
 use crowdb_protocol::chunkdb::rpc::{ChunkStrip, EcStrip, MirrorStrip};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
 
+use crate::metrics::ChunkdbMetrics;
 use crate::selector::{EcPlacement, MirrorPlacement, PlacementConstraints, PlacementPlan};
 use crate::topology::TopologySnapshot;
 
 pub use pool::DiskdbClientPool;
+
+const MAX_ALLOC_RETRIES: usize = 3;
 
 /// Allocator error.
 #[derive(Debug, thiserror::Error)]
@@ -49,12 +53,20 @@ pub enum StripAllocType {
 /// Chunk allocator — orchestrates placement + parallel diskdb calls.
 pub struct ChunkAllocator {
     pool: Arc<DiskdbClientPool>,
+    metrics: Option<Arc<ChunkdbMetrics>>,
 }
 
 impl ChunkAllocator {
     #[must_use]
     pub fn new(pool: Arc<DiskdbClientPool>) -> Self {
-        Self { pool }
+        Self { pool, metrics: None }
+    }
+
+    /// Attach allocation workflow metrics.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<ChunkdbMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Get a reference to the diskdb client pool.
@@ -77,16 +89,31 @@ impl ChunkAllocator {
         constraints: &PlacementConstraints,
     ) -> Result<ChunkStrip, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
+        let placement_started = std::time::Instant::now();
         let plan = match strip_type {
             StripAllocType::Mirror { copy_count } => MirrorPlacement::select(snap, copy_count, constraints)?,
             StripAllocType::Ec { data_num, code_num } => {
                 EcPlacement::select(snap, data_num, code_num, constraints)?
             }
         };
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_placement, placement_started);
+            metrics
+                .allocate_diskdb_calls
+                .inc_by(u64::try_from(plan.entries.len()).unwrap_or(u64::MAX));
+        }
 
+        let diskdb_started = std::time::Instant::now();
         let segments = self
             .allocate_blocks_parallel(owner_chunk, &plan, unit_count)
             .await?;
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_diskdb_round, diskdb_started);
+            metrics
+                .allocate_blocks
+                .inc_by(u64::try_from(segments.len()).unwrap_or(u64::MAX));
+            metrics.allocate_strips.inc();
+        }
 
         let strip = assemble_strip(
             &segments,
@@ -110,8 +137,6 @@ impl ChunkAllocator {
         plan: &PlacementPlan,
         unit_count: u32,
     ) -> Result<Vec<Segment>, AllocError> {
-        const MAX_ALLOC_RETRIES: usize = 3;
-
         let mut all_segments: Vec<Segment> = Vec::new();
         // Remaining requests per entry: (disk_group_id, block_count).
         let mut pending: Vec<(u64, u32)> = plan
@@ -195,6 +220,7 @@ impl ChunkAllocator {
 
             pending = next_pending;
             if !pending.is_empty() && attempt < MAX_ALLOC_RETRIES {
+                self.record_diskdb_retry();
                 warn!(
                     pending_count = pending.len(),
                     attempt = attempt + 1,
@@ -222,11 +248,25 @@ impl ChunkAllocator {
         Ok(all_segments)
     }
 
+    fn record_diskdb_retry(&self) {
+        if let Some(metrics) = &self.metrics {
+            metrics.allocate_diskdb_retries.inc();
+        }
+    }
+
     /// Free all allocated segments (rollback). Logs failures for the
     /// orphan scanner but does not propagate the free error.
     pub async fn rollback_strips(&self, strips: &[ChunkStrip]) -> Result<(), AllocError> {
         let segments: Vec<_> = strips.iter().flat_map(extract_segments).collect();
-        self.free_all(&segments).await
+        let started = std::time::Instant::now();
+        let result = self.free_all(&segments).await;
+        if let Some(metrics) = &self.metrics {
+            observe_elapsed(&metrics.allocate_rollback, started);
+            metrics
+                .allocate_rollback_blocks
+                .inc_by(u64::try_from(segments.len()).unwrap_or(u64::MAX));
+        }
+        result
     }
 
     fn validate_segment(
@@ -279,6 +319,10 @@ fn extract_segments(strip: &ChunkStrip) -> Vec<Segment> {
         Some(Strip::EcStrip(ec)) => ec.segments.clone(),
         None => Vec::new(),
     }
+}
+
+fn observe_elapsed(metric: &LatencyHistogram, started: std::time::Instant) {
+    metric.observe(started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
 }
 
 /// Assemble a `ChunkStrip` from allocated segments.

@@ -48,55 +48,97 @@ use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 
 use crate::lifecycle::{LifecycleError, LifecycleHandler};
+use crate::metrics::{ChunkdbMetrics, RequestGuard, RequestKind};
 
 /// crowdb-rpc handler set for `ChunkdbService`. Holds the same
 /// `LifecycleHandler` as the tonic `ChunkdbService`; `register_handlers`
 /// wires one handler per request `msg_type` into a `RpcServer`.
 pub struct ChunkdbRpcService {
     handler: Arc<LifecycleHandler>,
+    metrics: Arc<ChunkdbMetrics>,
     /// Tokio runtime handle for spawning async work from the C++ I/O
     /// thread callback.
     rt: Handle,
 }
 
 impl ChunkdbRpcService {
-    pub fn new(handler: Arc<LifecycleHandler>, rt: Handle) -> Self {
-        Self { handler, rt }
+    pub fn new(handler: Arc<LifecycleHandler>, metrics: Arc<ChunkdbMetrics>, rt: Handle) -> Self {
+        Self { handler, metrics, rt }
     }
 
     /// Register all 8 chunkdb request handlers into the `RpcServer`.
     pub fn register_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
         server.register_handler(
             FBMsgType::EAllocateChunkRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_allocate),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::AllocateChunk,
+                Self::handle_allocate,
+            ),
         );
         server.register_handler(
             FBMsgType::EAppendChunkRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_append),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::AppendChunk,
+                Self::handle_append,
+            ),
         );
         server.register_handler(
             FBMsgType::EQueryChunkRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_query),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::QueryChunk,
+                Self::handle_query,
+            ),
         );
         server.register_handler(
             FBMsgType::ESealChunkRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_seal),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::SealChunk,
+                Self::handle_seal,
+            ),
         );
         server.register_handler(
             FBMsgType::EDeleteChunkRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_delete),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::DeleteChunk,
+                Self::handle_delete,
+            ),
         );
         server.register_handler(
             FBMsgType::EDeleteChunkRangeRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_delete_range),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::DeleteChunkRange,
+                Self::handle_delete_range,
+            ),
         );
         server.register_handler(
             FBMsgType::EUpdateChunkStripRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_update_strip),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_update_strip,
+            ),
         );
         server.register_handler(
             FBMsgType::EListChunksRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_list),
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::ListChunks,
+                Self::handle_list,
+            ),
         );
     }
 
@@ -104,10 +146,12 @@ impl ChunkdbRpcService {
     fn make_handler(
         this: Arc<Self>,
         server: Arc<RpcServer>,
-        f: fn(&Self, ServerRequest, &Arc<RpcServer>),
+        kind: RequestKind,
+        f: fn(&Self, ServerRequest, &Arc<RpcServer>, RequestGuard),
     ) -> impl Fn(ServerRequest) + Send + 'static {
         move |req| {
-            f(&this, req, &server);
+            let guard = this.metrics.requests.start(kind);
+            f(&this, req, &server, guard);
         }
     }
 }

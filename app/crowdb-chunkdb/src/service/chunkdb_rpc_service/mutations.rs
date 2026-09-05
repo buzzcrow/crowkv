@@ -2,13 +2,19 @@ use super::{
     build_delete_range_response, map_error, parse_fb_chunk_strip, proto_chunk_type, proto_strip_type,
     submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId, ChunkdbRpcService,
     FBAllocateChunkRequest, FBAppendChunkRequest, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest, FBUpdateChunkStripRequest, RpcServer, ServerRequest,
+    FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest, FBUpdateChunkStripRequest, RequestGuard, RpcServer,
+    ServerRequest,
 };
 
 impl ChunkdbRpcService {
     // ── AllocateChunk ─────────────────────────────────────────────
 
-    pub(super) fn handle_allocate(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_allocate(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EAllocateChunkResponse.0 as u16;
@@ -78,6 +84,9 @@ impl ChunkdbRpcService {
                     chunk_type,
                 )
                 .await;
+            if result.is_ok() {
+                request.mark_success();
+            }
             submit_chunk_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,
@@ -91,7 +100,12 @@ impl ChunkdbRpcService {
 
     // ── AppendChunk ───────────────────────────────────────────────
 
-    pub(super) fn handle_append(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_append(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EAppendChunkResponse.0 as u16;
@@ -157,6 +171,9 @@ impl ChunkdbRpcService {
                     strip_size,
                 )
                 .await;
+            if result.is_ok() {
+                request.mark_success();
+            }
             submit_chunk_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,
@@ -170,7 +187,7 @@ impl ChunkdbRpcService {
 
     // ── SealChunk ─────────────────────────────────────────────────
 
-    pub(super) fn handle_seal(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_seal(&self, req: ServerRequest, server: &Arc<RpcServer>, mut request: RequestGuard) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::ESealChunkResponse.0 as u16;
@@ -210,6 +227,9 @@ impl ChunkdbRpcService {
             let seal_length = fb_req.seal_length();
 
             let result = handler.seal_chunk(&chunk_id, seal_length).await;
+            if result.is_ok() {
+                request.mark_success();
+            }
             submit_chunk_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,
@@ -223,7 +243,12 @@ impl ChunkdbRpcService {
 
     // ── DeleteChunk ───────────────────────────────────────────────
 
-    pub(super) fn handle_delete(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_delete(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EDeleteChunkResponse.0 as u16;
@@ -262,6 +287,9 @@ impl ChunkdbRpcService {
             };
 
             let result = handler.delete_chunk(&chunk_id).await;
+            if result.is_ok() {
+                request.mark_success();
+            }
             submit_chunk_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,
@@ -275,7 +303,12 @@ impl ChunkdbRpcService {
 
     // ── DeleteChunkRange ──────────────────────────────────────────
 
-    pub(super) fn handle_delete_range(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_delete_range(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EDeleteChunkRangeResponse.0 as u16;
@@ -318,6 +351,7 @@ impl ChunkdbRpcService {
             let result = handler.delete_chunk_range(&chunk_id, offset, size).await;
             match result {
                 Ok(()) => {
+                    request.mark_success();
                     let ctrl = build_delete_range_response(
                         req_id,
                         create_nano,
@@ -351,7 +385,12 @@ impl ChunkdbRpcService {
 
     // ── UpdateChunkStrip ──────────────────────────────────────────
 
-    pub(super) fn handle_update_strip(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_update_strip(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EUpdateChunkStripResponse.0 as u16;
@@ -415,6 +454,9 @@ impl ChunkdbRpcService {
             };
 
             let result = handler.update_chunk_strip(&chunk_id, strip_index, strip).await;
+            if result.is_ok() {
+                request.mark_success();
+            }
             submit_chunk_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,

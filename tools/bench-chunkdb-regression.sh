@@ -1,110 +1,170 @@
 #!/usr/bin/env bash
-# Copyright 2026-present Gian <crow.db@outlook.com>
-# Licensed under the Apache License, Version 2.0.
+# CROWDB ChunkDB EC allocation regression.
+#
+# Three co-located logical nodes, each running KV, DiskDB, and ChunkDB.
+# The fixture has three racks, three KV data groups, and four 4-TiB logical
+# disks per DiskDB. Each operation allocates one EC 8+4 strip. DiskDB requests
+# are batched per data group within that strip; strips are not batched together.
 #
 # Optional environment variables:
-#   CHUNKDB_BENCH_DURATION   seconds per non-exhaustion case (default: 10)
-#   CHUNKDB_BENCH_CASES      optional space-separated case labels
-#   CHUNKDB_BENCH_LOG_ROOT   persistent run root
+#   CHUNKDB_BENCH_DURATION       seconds per case (default: 20)
+#   CHUNKDB_BENCH_CASES          space-separated case labels
+#   CHUNKDB_BENCH_CONNECTIONS    override all client/service connection counts
+#   CHUNKDB_BENCH_RPC_WORKERS    override all RPC worker counts
+#   CHUNKDB_BENCH_KV_INFLIGHT    KV proposal window (default: 32)
+#   CHUNKDB_BENCH_KV_COALESCE    KV coalescing width (default: 32)
+#   CHUNKDB_BENCH_DISK_CAPACITY  bytes per disk (default: 4 TiB)
+#   CHUNKDB_BENCH_ZONE_SIZE      bytes per zone (default: 256 GiB)
+#   CHUNKDB_BENCH_LOG_ROOT       retained run root
+#   CHUNKDB_BENCH_RESULTS        result TSV path
 #
-# AMD (2026-09-05): Ryzen 9 5950X, 16c/32t, Linux 6.8, x86_64.
-# Six KV nodes, six DiskDB instances, 24 x 1-TiB disks, three ChunkDB
-# instances, 10 seconds per non-exhaustion case:
-#
-#   Workload       Wkr  Shape   ops/s  p50us  p99us  Stop       Err  Space
-#   allocate         1  mirror    378   2583   3851  deadline     0  exact
-#   allocate         4  mirror   2241   1760   2241  deadline     0  exact
-#   allocate        16  mirror   4230   3691   5727  deadline     0  exact
-#   allocate        64  mirror   5526  11347  18010  deadline     0  exact
-#   allocate       128  mirror   5668  22002  35737  deadline     0  exact
-#   allocate       256  mirror   5648  44602  64974  deadline     0  exact
-#   allocate         1  EC4+2     362   2814   3164  deadline     0  exact
-#   allocate        16  EC4+2    3183   4705   7076  deadline     0  exact
-#   allocate        16  EC8+4    2350   6324  10243  deadline     0  exact
-#   mix              1  mirror    578   2057   2841  deadline     0  exact
-#   mix             16  mirror   6416   3037   4987  deadline    26  exact
-#   mix             64  mirror   8173   9214  15720  deadline   109  FAIL
-#   exhaustion       8  mirror    269   2821 162839  exhausted    1  FAIL
-#
-# Mirror allocation peaks at 5,668 ops/s with 128 workers; 256 workers
-# doubles median latency without adding throughput. The concurrent mix exposes
-# acknowledged-write visibility gaps (`ChunkNotFound`) and the 64-worker and
-# exhaustion cases retain 105 MiB and 8 MiB respectively after verification.
-# Keep these failures as correctness sentinels; do not accept their throughput
-# as a valid performance sample.
-
+# Wl       Grp Thr Strip EC  Cli Cdb Ddb Kv Wkr Win Coal chunk/s block/s p50   p99    Dur Err Stop     Spc
+# allocate  3   1   1     8+4 2   2   2   2  2   32  32   436     5232    2386  2777   20s 0   deadline exact
+# allocate  3   16  1     8+4 2   2   2   2  2   32  32   5099    61188   3060  4810   20s 0   deadline exact
+# allocate  3   128 1     8+4 4   4   4   4  4   32  32   8259    99108   14849 27332  20s 0   deadline exact
+# allocate  3   256 1     8+4 4   4   4   4  4   32  32   8737    104844  28112 51656  20s 0   deadline exact
+# allocate  3   512 1     8+4 4   4   4   4  4   32  32   8548    102576  57402 103077 20s 0   deadline exact
+# Clean artifacts: chunkdb-regression-20260905-181843 (all rows).
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
-root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-run_stamp=$(date -u +%Y%m%dT%H%M%SZ)
-duration=${CHUNKDB_BENCH_DURATION:-10}
-cases=${CHUNKDB_BENCH_CASES:-}
-run_root=${CHUNKDB_BENCH_LOG_ROOT:-${1:-"${root_dir}/bench-log/chunkdb-regression-${run_stamp}"}}
-cli="${root_dir}/target/release/crowdb-cli"
+unset CROWDB_ASAN
+DURATION="${CHUNKDB_BENCH_DURATION:-20}"
+CASES="${CHUNKDB_BENCH_CASES:-}"
+CONNECTIONS_OVERRIDE="${CHUNKDB_BENCH_CONNECTIONS:-}"
+RPC_WORKERS_OVERRIDE="${CHUNKDB_BENCH_RPC_WORKERS:-}"
+KV_INFLIGHT="${CHUNKDB_BENCH_KV_INFLIGHT:-32}"
+KV_COALESCE="${CHUNKDB_BENCH_KV_COALESCE:-32}"
+DISK_CAPACITY="${CHUNKDB_BENCH_DISK_CAPACITY:-4398046511104}"
+ZONE_SIZE="${CHUNKDB_BENCH_ZONE_SIZE:-274877906944}"
+RUN_STAMP=$(date +%Y%m%d-%H%M%S)
+LOG_ROOT="${CHUNKDB_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkdb-regression-$RUN_STAMP}"
+RESULTS_FILE="${CHUNKDB_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
+CURRENT_CONFIG=""
+FAILURES=0
+CASE_NUMBER=0
 
-if ! [[ "${duration}" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'CHUNKDB_BENCH_DURATION must be a positive integer\n' >&2
+if ! [[ "$DURATION" =~ ^[1-9][0-9]*$ ]] || ! [[ "$DISK_CAPACITY" =~ ^[1-9][0-9]*$ ]] \
+    || ! [[ "$ZONE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: duration, disk capacity, and zone size must be positive integers" >&2
     exit 2
 fi
 
-mkdir -p "${run_root}"
-pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+cli() {
+    ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" "$@"
+}
 
-overall_status=0
+destroy_cluster() {
+    if [ -n "$CURRENT_CONFIG" ] && [ -f "$CURRENT_CONFIG" ]; then
+        cli cluster destroy || true
+    fi
+    CURRENT_CONFIG=""
+}
+trap destroy_cluster EXIT
+
+field() {
+    local line="$1" name="$2"
+    sed -n "s/.*${name}=\([^ ]*\).*/\1/p" <<<"$line"
+}
+
+verify_logs() {
+    local label="$1" kv_metrics diskdb_metrics chunkdb_metrics cli_metrics
+    local kv_rpc diskdb_rpc chunkdb_rpc cli_rpc expected_servers expected_clients
+    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
+    chunkdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-chunkdb-metrics-*.log' -type f | wc -l)
+    cli_metrics=$(find "$LOG_ROOT" -path '*/bench-chunkdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
+    chunkdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-chunkdb-rpc-*.log' -type f | wc -l)
+    cli_rpc=$(find "$LOG_ROOT" -path '*/bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
+    expected_servers=$((CASE_NUMBER * 3))
+    expected_clients="$CASE_NUMBER"
+    if [ "$kv_metrics" -ne "$expected_servers" ] || [ "$diskdb_metrics" -ne "$expected_servers" ] \
+        || [ "$chunkdb_metrics" -ne "$expected_servers" ] || [ "$cli_metrics" -ne "$expected_clients" ] \
+        || [ "$kv_rpc" -ne "$expected_servers" ] || [ "$diskdb_rpc" -ne "$expected_servers" ] \
+        || [ "$chunkdb_rpc" -ne "$expected_servers" ] || [ "$cli_rpc" -ne "$expected_clients" ]; then
+        echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
+        return 1
+    fi
+    echo "    logs: kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc"
+}
 
 run_case() {
-    case_name=$1
-    disk_capacity=$2
-    disk_zone_size=$3
-    shift 3
-    case_dir="${run_root}/${case_name}"
-    config_path="${case_dir}/console.toml"
-    mkdir -p "${case_dir}"
-    deploy_args=()
-    if [[ "${disk_capacity}" -ne 0 ]]; then
-        deploy_args+=(--disk-capacity-bytes "${disk_capacity}" --disk-zone-size-bytes "${disk_zone_size}")
-    fi
-    set +e
-    "${cli}" --config "${config_path}" --log-root "${case_dir}" cluster local-deploy -t combined "${deploy_args[@]}"
-    deploy_status=$?
-    if [[ "${deploy_status}" -ne 0 ]]; then
-        "${cli}" --config "${config_path}" --log-root "${case_dir}" cluster destroy
-        set -e
-        return "${deploy_status}"
-    fi
-    "${cli}" --config "${config_path}" --log-root "${case_dir}" "$@" | tee "${case_dir}/result.log"
-    case_status=${PIPESTATUS[0]}
-    "${cli}" --config "${config_path}" --log-root "${case_dir}" cluster destroy
-    destroy_status=$?
-    set -e
-    if [[ "${case_status}" -eq 0 && "${destroy_status}" -ne 0 ]]; then
-        case_status=${destroy_status}
-    fi
-    return "${case_status}"
-}
-
-run_checked_case() {
-    if [[ -n "${cases}" && " ${cases} " != *" $1 "* ]]; then
+    local concurrency="$1" label="$2" profile_connections="$3" profile_workers="$4"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
         return
     fi
-    if ! run_case "$@"; then
-        overall_status=1
+    local connections="${CONNECTIONS_OVERRIDE:-$profile_connections}"
+    local workers="${RPC_WORKERS_OVERRIDE:-$profile_workers}"
+    CURRENT_CONFIG="$LOG_ROOT/$label-console.toml"
+    CASE_NUMBER=$((CASE_NUMBER + 1))
+    echo ">>> $label (EC 8+4, concurrency=$concurrency)"
+    cli cluster local-deploy -t combined \
+        --kv-backend mem-block --wal-backend mem-block --metrics-interval 1 \
+        --event-write --peer-pool-size "$connections" --rpc-workers "$workers" \
+        --max-inflight "$KV_INFLIGHT" --coalesce-max-keys "$KV_COALESCE" \
+        --data-groups 1,2,3 --disk-groups-per-node 1 --disks-per-group 4 \
+        --disk-capacity-bytes "$DISK_CAPACITY" --disk-zone-size-bytes "$ZONE_SIZE" \
+        --disk-unit-size-bytes 1048576 --kv-connections "$connections" \
+        --kv-client-rpc-workers "$workers" --diskdb-connections "$connections" \
+        --diskdb-client-rpc-workers "$workers" --chunkdb-instances 3
+
+    local output status line space busy expected
+    set +e
+    output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
+        ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
+        bench chunkdb allocate --duration-secs "$DURATION" --concurrency "$concurrency" \
+        --chunkdb-connections "$connections" --chunkdb-client-rpc-workers "$workers" \
+        --strip-count 1 --strip-type ec --data-num 8 --code-num 4 \
+        --write-granularity-kb 1024 --seed 1 --metrics-interval 1 2>&1)
+    status=$?
+    set -e
+    printf '%s\n' "$output"
+    line=$(sed -n '/^chunkdb bench /p' <<<"$output" | tail -n 1)
+    if [ -z "$line" ]; then
+        printf 'allocate\t3\t%s\t1\t8+4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\t%ss\t1\tunknown\tunknown\n' \
+            "$concurrency" "$connections" "$connections" "$connections" "$connections" \
+            "$workers" "$KV_INFLIGHT" "$KV_COALESCE" "$DURATION" >>"$RESULTS_FILE"
+    else
+        busy=$(field "$line" busy_delta)
+        expected=$(field "$line" expected_busy_delta)
+        space=mismatch
+        if [ -n "$busy" ] && [ "$busy" = "$expected" ]; then
+            space=exact
+        fi
+        printf 'allocate\t3\t%s\t1\t8+4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\n' \
+            "$concurrency" "$connections" "$connections" "$connections" "$connections" \
+            "$workers" "$KV_INFLIGHT" "$KV_COALESCE" "$(field "$line" ops_per_sec)" \
+            "$(field "$line" block_allocs_per_sec)" "$(field "$line" p50_us)" \
+            "$(field "$line" p99_us)" "$DURATION" "$(field "$line" errors)" \
+            "$(field "$line" stop)" "$space" >>"$RESULTS_FILE"
+    fi
+    if ! verify_logs "$label"; then
+        FAILURES=$((FAILURES + 1))
+    fi
+    destroy_cluster
+    if [ "$status" -ne 0 ]; then
+        echo "ERROR: benchmark failed for $label (exit=$status)" >&2
+        FAILURES=$((FAILURES + 1))
     fi
 }
 
-run_checked_case mirror-1t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 1
-run_checked_case mirror-4t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 4
-run_checked_case mirror-16t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 16
-run_checked_case mirror-64t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 64
-run_checked_case mirror-128t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 128
-run_checked_case mirror-256t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 256
-run_checked_case ec-4-2-1t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type ec --data-num 4 --code-num 2 --concurrency 1
-run_checked_case ec-4-2-16t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type ec --data-num 4 --code-num 2 --concurrency 16
-run_checked_case ec-8-4-16t 0 0 bench chunkdb allocate --duration-secs "${duration}" --strip-type ec --data-num 8 --code-num 4 --concurrency 16
-run_checked_case lifecycle-mix-1t 0 0 bench chunkdb mix --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 1 --seed 133
-run_checked_case lifecycle-mix-16t 0 0 bench chunkdb mix --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 16 --seed 133
-run_checked_case lifecycle-mix-64t 0 0 bench chunkdb mix --duration-secs "${duration}" --strip-type mirror --copy-count 3 --concurrency 64 --seed 133
-run_checked_case capacity-exhaustion 16777216 4194304 bench chunkdb allocate --strip-type mirror --copy-count 3 --concurrency 8 --duration-secs 300
+echo "=== building release binaries ==="
+pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
+printf 'Wl\tGrp\tThr\tStrip\tEC\tCli\tCdb\tDdb\tKv\tWkr\tWin\tCoal\tchunk/s\tblock/s\tp50\tp99\tDur\tErr\tStop\tSpc\n' >"$RESULTS_FILE"
 
-printf 'chunkdb regression results: %s\n' "${run_root}"
-exit "${overall_status}"
+run_case 1 allocate_ec8_4_1t 2 2
+run_case 16 allocate_ec8_4_16t 2 2
+run_case 128 allocate_ec8_4_128t 4 4
+run_case 256 allocate_ec8_4_256t 4 4
+run_case 512 allocate_ec8_4_512t 4 4
+
+echo "=== DONE ==="
+echo "Logs and results retained in $LOG_ROOT"
+column -t -s$'\t' "$RESULTS_FILE"
+if [ "$FAILURES" -ne 0 ]; then
+    echo "ERROR: $FAILURES regression case(s) failed" >&2
+    exit 1
+fi

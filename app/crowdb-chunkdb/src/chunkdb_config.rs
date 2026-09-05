@@ -49,6 +49,13 @@ impl BaseConfig for ChunkdbConfig {
         if self.topology.refresh_interval_secs == 0 {
             return Err("topology.refresh_interval_secs must be > 0".into());
         }
+        if self.server.kv_pool_size == 0
+            || self.server.kv_rpc_workers == 0
+            || self.server.diskdb_pool_size == 0
+            || self.server.diskdb_rpc_workers == 0
+        {
+            return Err("server client pool sizes and RPC workers must be > 0".into());
+        }
         self.lifecycle.validate()?;
         Ok(())
     }
@@ -82,11 +89,31 @@ pub struct ServerConfig {
     pub rpc_listen_addr: String,
     pub instance_id: Option<String>,
     pub kv_server_mgmt_seeds: Vec<String>,
+    /// KV client connections kept per endpoint.
+    #[serde(default = "default_client_pool_size")]
+    pub kv_pool_size: usize,
+    /// crowdb-rpc I/O workers used by the KV client.
+    #[serde(default = "default_client_rpc_workers")]
+    pub kv_rpc_workers: u32,
+    /// DiskDB client connections kept per endpoint.
+    #[serde(default = "default_client_pool_size")]
+    pub diskdb_pool_size: usize,
+    /// crowdb-rpc I/O workers used by the DiskDB client.
+    #[serde(default = "default_client_rpc_workers")]
+    pub diskdb_rpc_workers: u32,
     /// Service-registry keep-alive interval in seconds. 0 disables
     /// registration (the binding monitor will not see this instance).
     /// Default: 10.
     #[serde(default = "default_keepalive_interval_secs")]
     pub keepalive_interval_secs: u32,
+}
+
+const fn default_client_pool_size() -> usize {
+    1
+}
+
+const fn default_client_rpc_workers() -> u32 {
+    2
 }
 
 fn default_keepalive_interval_secs() -> u32 {
@@ -104,6 +131,10 @@ impl Default for ServerConfig {
             rpc_listen_addr: default_rpc_listen_addr(),
             instance_id: None,
             kv_server_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
+            kv_pool_size: default_client_pool_size(),
+            kv_rpc_workers: default_client_rpc_workers(),
+            diskdb_pool_size: default_client_pool_size(),
+            diskdb_rpc_workers: default_client_rpc_workers(),
             keepalive_interval_secs: default_keepalive_interval_secs(),
         }
     }

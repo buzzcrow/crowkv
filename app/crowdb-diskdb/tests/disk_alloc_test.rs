@@ -8,10 +8,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crowdb_diskdb::model::disk::DdbDisk;
-use crowdb_diskdb::model::disk_group::{AllocError, DdbDiskGroup};
+use crowdb_diskdb::model::disk_group::{AllocError, DdbDiskGroup, TentativeBlock};
 use crowdb_diskdb::model::zone::DdbZone;
 use crowdb_protocol::common::{DiskId, HwStatus};
-use crowdb_protocol::diskdb::rpc::DiskValue;
+use crowdb_protocol::diskdb::rpc::{BusyBlockValue, DiskValue};
 
 fn disk_id(n: u64) -> DiskId {
     DiskId { high: 0, low: n }
@@ -51,6 +51,28 @@ fn make_dg_with_disks(disk_specs: &[(u64, u32, u32)]) -> Arc<DdbDiskGroup> {
         dg.add_disk(disk);
     }
     dg
+}
+
+#[test]
+fn tentative_cache_removes_only_matching_block() {
+    let dg = DdbDiskGroup::new(DG, 1, 1);
+    let block = TentativeBlock {
+        disk_id: disk_id(7),
+        zone_index: 3,
+        unit_offset: 11,
+        value: BusyBlockValue {
+            allocation_ts: 99,
+            unit_count: 2,
+            ..Default::default()
+        },
+    };
+    dg.cache_tentative(block);
+
+    assert!(dg.tentative(99).is_some());
+    assert!(!dg.remove_matching_tentative(99, disk_id(8), 3, 11));
+    assert!(dg.tentative(99).is_some());
+    assert!(dg.remove_matching_tentative(99, disk_id(7), 3, 11));
+    assert!(dg.tentative(99).is_none());
 }
 
 // ── DdbDisk ────────────────────────────────────────────────────

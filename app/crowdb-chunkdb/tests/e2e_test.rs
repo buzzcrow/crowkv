@@ -14,12 +14,14 @@ use std::sync::Arc;
 
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::lifecycle::LifecycleHandler;
+use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::routing::{
     default_binding_table, BindingCache, BindingTable, BucketBinding, MigrationState,
 };
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::topology::TopologyCache;
+use crowdb_common::metrics::MetricsRegistry;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
 use crowdb_protocol::common::{ChunkId, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
@@ -97,7 +99,9 @@ async fn service_construction() {
     // Verify the crowdb-rpc service can be constructed with a real handler.
     let handler = Arc::new(build_handler());
     let rt_handle = tokio::runtime::Handle::current();
-    let _service = ChunkdbRpcService::new(handler, rt_handle);
+    let mut registry = MetricsRegistry::new();
+    let metrics = Arc::new(ChunkdbMetrics::register(&mut registry));
+    let _service = ChunkdbRpcService::new(handler, metrics, rt_handle);
 }
 
 #[tokio::test]

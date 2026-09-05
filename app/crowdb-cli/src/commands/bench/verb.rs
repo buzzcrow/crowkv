@@ -40,6 +40,12 @@ pub struct ChunkdbArgs {
     pub duration_secs: u64,
     #[arg(long, default_value_t = 4)]
     pub concurrency: usize,
+    /// Connections kept per `ChunkDB` endpoint.
+    #[arg(long, default_value_t = 1)]
+    pub chunkdb_connections: usize,
+    /// crowdb-rpc I/O workers used by the `ChunkDB` client transport.
+    #[arg(long, default_value_t = 2)]
+    pub chunkdb_client_rpc_workers: u32,
     #[arg(long, default_value_t = 1)]
     pub strip_count: u32,
     #[arg(long, default_value_t = 1024)]
@@ -54,6 +60,9 @@ pub struct ChunkdbArgs {
     pub code_num: u32,
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
+    /// Metrics flush interval in seconds. 0 disables the metrics log.
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

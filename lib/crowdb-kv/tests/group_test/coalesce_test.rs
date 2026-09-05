@@ -11,13 +11,20 @@ use crowdb_kv::common::config::CrowDBConfig;
 
 #[allow(clippy::cast_possible_truncation)]
 fn encode_put(key: &[u8], value: &[u8]) -> Vec<u8> {
+    encode_puts(&[(key, value)])
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn encode_puts(items: &[(&[u8], &[u8])]) -> Vec<u8> {
     let mut buf = Vec::new();
-    buf.extend_from_slice(&1u16.to_le_bytes());
-    buf.push(0u8);
-    buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-    buf.extend_from_slice(key);
-    buf.extend_from_slice(&(value.len() as u32).to_le_bytes());
-    buf.extend_from_slice(value);
+    buf.extend_from_slice(&(items.len() as u16).to_le_bytes());
+    for (key, value) in items {
+        buf.push(0u8);
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        buf.extend_from_slice(value);
+    }
     buf
 }
 
@@ -189,6 +196,55 @@ async fn coalesce_applies_all_keys_to_engine() {
     let v2 = learner.engine_get(b"ak2").await.expect("ak2 missing");
     assert_eq!(v1.1, b"v1");
     assert_eq!(v2.1, b"v2");
+}
+
+#[tokio::test]
+async fn coalesce_preserves_operation_counts_from_batch_requests() {
+    let group = coalesce_group(32);
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+    group.set_coalesce_round_gate_for_tests(gate_rx);
+    let g = Arc::clone(&group);
+    let h1 = tokio::spawn(async move {
+        g.propose(
+            encode_puts(&[(b"batch-a", b"value-a"), (b"batch-b", b"value-b")]),
+            Some(1),
+            Some(1),
+        )
+        .await
+    });
+    while !group.has_coalesce_pending_for_tests() {
+        tokio::task::yield_now().await;
+    }
+    let g = Arc::clone(&group);
+    let h2 = tokio::spawn(async move {
+        g.propose(
+            encode_puts(&[(b"batch-c", b"value-c"), (b"batch-d", b"value-d")]),
+            Some(2),
+            Some(1),
+        )
+        .await
+    });
+    while group.coalesce_pending_count_for_tests() < 2 {
+        tokio::task::yield_now().await;
+    }
+    let _ = gate_tx.send(());
+    assert!(matches!(h1.await.unwrap(), ProposeResult::Chosen { .. }));
+    assert!(matches!(h2.await.unwrap(), ProposeResult::Chosen { .. }));
+
+    for (key, value) in [
+        (&b"batch-a"[..], &b"value-a"[..]),
+        (&b"batch-b"[..], &b"value-b"[..]),
+        (&b"batch-c"[..], &b"value-c"[..]),
+        (&b"batch-d"[..], &b"value-d"[..]),
+    ] {
+        let stored = group
+            .local_replica()
+            .learner
+            .engine_get(key)
+            .await
+            .expect("key missing");
+        assert_eq!(stored.1, value);
+    }
 }
 
 #[tokio::test]

@@ -317,11 +317,12 @@ impl DiskdbRpcService {
         };
 
         let kv = Arc::clone(&self.kv);
+        let metrics = Arc::clone(&self.metrics);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);
         self.rt.spawn(async move {
             let mut request = request;
-            let result = alloc::commit_blocks(&dg, &segments, &kv).await;
+            let result = alloc::commit_blocks(&dg, &segments, &kv, &metrics).await;
             let conn_handle = conn_handle_usize as *mut std::ffi::c_void;
             match result {
                 Ok(committed) => {

@@ -100,6 +100,12 @@ pub enum ClusterVerb {
         /// [diskdb] KV client crowdb-rpc I/O workers. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         kv_client_rpc_workers: u32,
+        /// [chunkdb] `DiskDB` client connections kept per endpoint. 0 = server default (1).
+        #[arg(long, default_value_t = 0)]
+        diskdb_connections: usize,
+        /// [chunkdb] `DiskDB` client crowdb-rpc I/O workers. 0 = server default (2).
+        #[arg(long, default_value_t = 0)]
+        diskdb_client_rpc_workers: u32,
         /// [chunkdb] Number of instances to deploy.
         #[arg(long, default_value_t = 3)]
         chunkdb_instances: usize,
@@ -214,6 +220,8 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             data_groups,
             kv_connections,
             kv_client_rpc_workers,
+            diskdb_connections,
+            diskdb_client_rpc_workers,
             chunkdb_instances,
             allow_unsafe_ec,
         } => match service_type.as_str() {
@@ -247,12 +255,22 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     kv_connections: nonzero(kv_connections),
                     kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
                 };
+                let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
+                    instance_count: chunkdb_instances,
+                    allow_unsafe_ec,
+                    rpc_workers: nonzero(rpc_workers),
+                    kv_connections: nonzero(kv_connections),
+                    kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
+                    diskdb_connections: nonzero(diskdb_connections),
+                    diskdb_client_rpc_workers: nonzero(diskdb_client_rpc_workers),
+                    metrics_interval: nonzero(metrics_interval),
+                };
                 match crowdb_console_shared::ops::cluster::local_deploy_combined(
                     &ctx,
                     &workspace,
                     Some(&tunables),
                     &disk,
-                    allow_unsafe_ec,
+                    &chunk,
                 )
                 .await
                 {
@@ -427,13 +445,18 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 };
                 let workspace =
                     deploy_workspace(cli).unwrap_or_else(|| std::path::PathBuf::from("cli-deploy"));
-                match crowdb_console_shared::ops::cluster::local_deploy_chunkdb(
-                    &ctx,
-                    &workspace,
-                    chunkdb_instances,
+                let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
+                    instance_count: chunkdb_instances,
                     allow_unsafe_ec,
-                )
-                .await
+                    rpc_workers: nonzero(rpc_workers),
+                    kv_connections: nonzero(kv_connections),
+                    kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
+                    diskdb_connections: nonzero(diskdb_connections),
+                    diskdb_client_rpc_workers: nonzero(diskdb_client_rpc_workers),
+                    metrics_interval: nonzero(metrics_interval),
+                };
+                match crowdb_console_shared::ops::cluster::local_deploy_chunkdb(&ctx, &workspace, &chunk)
+                    .await
                 {
                     Ok(summary) => {
                         if let Err(code) = commit_config(cli, &ctx) {

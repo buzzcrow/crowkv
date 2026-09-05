@@ -1,13 +1,18 @@
 use super::{
     build_list_response, map_error, submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId,
-    ChunkdbRpcService, FBChunkdbRetCode, FBListChunksRequest, FBMsgType, FBQueryChunkRequest, RpcServer,
-    ServerRequest,
+    ChunkdbRpcService, FBChunkdbRetCode, FBListChunksRequest, FBMsgType, FBQueryChunkRequest, RequestGuard,
+    RpcServer, ServerRequest,
 };
 
 impl ChunkdbRpcService {
     // ── QueryChunk ────────────────────────────────────────────────
 
-    pub(super) fn handle_query(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_query(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EQueryChunkResponse.0 as u16;
@@ -46,6 +51,9 @@ impl ChunkdbRpcService {
             };
 
             let result = handler.query_chunk(&chunk_id).await;
+            if result.is_ok() {
+                request.mark_success();
+            }
             submit_chunk_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,
@@ -59,7 +67,7 @@ impl ChunkdbRpcService {
 
     // ── ListChunks ────────────────────────────────────────────────
 
-    pub(super) fn handle_list(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    pub(super) fn handle_list(&self, req: ServerRequest, server: &Arc<RpcServer>, mut request: RequestGuard) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EListChunksResponse.0 as u16;
@@ -90,6 +98,7 @@ impl ChunkdbRpcService {
             let result = handler.list_chunks(start_after.as_ref(), max_keys).await;
             match result {
                 Ok(chunks) => {
+                    request.mark_success();
                     let next_token = chunks.last().and_then(|c| c.id);
                     let has_next = next_token.is_some();
                     let ctrl = build_list_response(

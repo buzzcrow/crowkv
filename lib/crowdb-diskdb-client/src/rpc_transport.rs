@@ -88,7 +88,11 @@ impl DiskdbRpcTransport {
         server.register_conn_count_gauge("rpc.client.connections");
         let rpc = RpcClient::new();
         rpc.set_completion_pool_size(1024);
-        rpc.start_reaper(5_000_000_000, 500_000_000);
+        // Disk allocation is not request-idempotent. The distributed KV
+        // commit can cross five seconds under a saturated EC allocation
+        // workload, so keep the original request alive instead of creating
+        // a duplicate allocation through the transient retry path.
+        rpc.start_reaper(10_000_000_000, 500_000_000);
         Self {
             server,
             rpc,

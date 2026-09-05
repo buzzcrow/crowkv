@@ -607,7 +607,20 @@ pub struct LocalChunkdbDeploySummary {
     pub instance_count: usize,
 }
 
-/// Summary of the six-node, three-rack full `ChunkDB` benchmark stack.
+/// Transport controls for locally deployed `ChunkDB` instances.
+#[derive(Debug, Clone)]
+pub struct LocalChunkdbDeployConfig {
+    pub instance_count: usize,
+    pub allow_unsafe_ec: bool,
+    pub rpc_workers: Option<u32>,
+    pub kv_connections: Option<usize>,
+    pub kv_client_rpc_workers: Option<u32>,
+    pub diskdb_connections: Option<usize>,
+    pub diskdb_client_rpc_workers: Option<u32>,
+    pub metrics_interval: Option<u64>,
+}
+
+/// Summary of the three-node, three-rack full `ChunkDB` benchmark stack.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LocalCombinedDeploySummary {
     pub kv_nodes: usize,
@@ -625,15 +638,17 @@ pub async fn local_deploy_combined(
     workspace: &std::path::Path,
     tunables: Option<&KvDeployTunables>,
     disk: &LocalDiskdbDeployConfig,
-    allow_unsafe_ec: bool,
+    chunk: &LocalChunkdbDeployConfig,
 ) -> Result<LocalCombinedDeploySummary> {
-    local_deploy(ctx, 6, Some(workspace), tunables).await?;
+    local_deploy(ctx, 3, Some(workspace), tunables).await?;
     assign_benchmark_racks(ctx).await?;
-    crate::ops::kv_logical::add_group(ctx, 0, 1, 101, &[1, 2, 3]).await?;
+    for group_id in &disk.data_groups {
+        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+    }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
-    let chunkdb = local_deploy_chunkdb(ctx, workspace, 3, allow_unsafe_ec).await?;
+    let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
-        kv_nodes: 6,
+        kv_nodes: 3,
         racks: 3,
         diskdb_instances: diskdb.instance_count,
         chunkdb_instances: chunkdb.instance_count,
@@ -658,8 +673,8 @@ async fn assign_benchmark_racks(ctx: &OpContext) -> Result<()> {
             )
             .await?;
     }
-    for node_id in 1..=6 {
-        let rack_id = (node_id - 1) / 2 + 1;
+    for node_id in 1..=3 {
+        let rack_id = node_id;
         if rack_id != 1 {
             ctx.sysmd().remove_node(1, node_id).await?;
         }
@@ -690,9 +705,9 @@ async fn assign_benchmark_racks(ctx: &OpContext) -> Result<()> {
 pub async fn local_deploy_chunkdb(
     ctx: &OpContext,
     workspace: &std::path::Path,
-    instance_count: usize,
-    allow_unsafe_ec: bool,
+    config: &LocalChunkdbDeployConfig,
 ) -> Result<LocalChunkdbDeploySummary> {
+    let instance_count = config.instance_count;
     let mut nodes = ctx.config().nodes.clone();
     nodes.sort_by_key(|node| node.id);
     if instance_count == 0 || nodes.len() < instance_count {
@@ -744,7 +759,13 @@ pub async fn local_deploy_chunkdb(
                 http_port: http_ports[index],
                 rpc_port: rpc_ports[index],
                 kv_server_mgmt_seeds: seeds.clone(),
-                allow_unsafe_ec,
+                allow_unsafe_ec: config.allow_unsafe_ec,
+                rpc_workers: config.rpc_workers,
+                kv_connections: config.kv_connections,
+                kv_client_rpc_workers: config.kv_client_rpc_workers,
+                diskdb_connections: config.diskdb_connections,
+                diskdb_client_rpc_workers: config.diskdb_client_rpc_workers,
+                metrics_interval: config.metrics_interval,
             };
             async move {
                 let deployed = lifecycle::deploy_chunkdb_local(&request, &node, &node_dir).await?;

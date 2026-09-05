@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RangeBindingClient};
+use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RangeBindingClient, RetryConfig};
 use crowdb_diskdb_client::{DiskdbClient, DiskdbClientError, DiskdbRpcTransport};
 use crowdb_kv_client::{ReadEndpointPolicy, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
@@ -22,6 +22,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use super::kv_client::{build_kv_client, KvClientTunables};
+use super::metrics::BenchMetrics;
 use super::verb::{ChunkdbArgs, ChunkdbBenchVerb, ChunkdbStripMode};
 use crate::Cli;
 
@@ -35,10 +36,7 @@ struct TaskResult {
 }
 
 pub async fn run(cli: &Cli, verb: ChunkdbBenchVerb) -> ExitCode {
-    let (args, mixed) = match verb {
-        ChunkdbBenchVerb::Allocate(args) => (args, false),
-        ChunkdbBenchVerb::Mix(args) => (args, true),
-    };
+    let (args, mixed) = benchmark_args(verb);
     if !valid_args(&args) {
         return ExitCode::from(2);
     }
@@ -79,9 +77,16 @@ pub async fn run(cli: &Cli, verb: ChunkdbBenchVerb) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let client = Arc::new(
-        ChunkdbClient::new(
+        ChunkdbClient::with_retry_config(
             ServiceRegistryClient::from_shared(kv),
-            Arc::new(ChunkdbRpcTransport::new()),
+            RetryConfig {
+                max_retries: 5,
+                initial_backoff: Duration::from_millis(50),
+            },
+            Arc::new(ChunkdbRpcTransport::with_pool_size(
+                args.chunkdb_connections,
+                args.chunkdb_client_rpc_workers,
+            )),
         )
         .with_range_binding(range_bindings),
     );
@@ -91,7 +96,7 @@ pub async fn run(cli: &Cli, verb: ChunkdbBenchVerb) -> ExitCode {
     }
 
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
-    let started = Instant::now();
+    let (mut metrics, started) = start_metrics(cli, args.metrics_interval);
     let mut handles = Vec::with_capacity(args.concurrency);
     for task_id in 0..args.concurrency {
         handles.push(tokio::spawn(run_task(
@@ -118,6 +123,7 @@ pub async fn run(cli: &Cli, verb: ChunkdbBenchVerb) -> ExitCode {
             }
         }
     }
+    metrics.stop().await;
     verify_and_report(
         &client,
         &diskdb,
@@ -128,6 +134,19 @@ pub async fn run(cli: &Cli, verb: ChunkdbBenchVerb) -> ExitCode {
         &mut total,
     )
     .await
+}
+
+fn benchmark_args(verb: ChunkdbBenchVerb) -> (ChunkdbArgs, bool) {
+    match verb {
+        ChunkdbBenchVerb::Allocate(args) => (args, false),
+        ChunkdbBenchVerb::Mix(args) => (args, true),
+    }
+}
+
+fn start_metrics(cli: &Cli, interval: u64) -> (BenchMetrics, Instant) {
+    let mut metrics = BenchMetrics::new(&cli.log_dir, interval);
+    metrics.start();
+    (metrics, Instant::now())
 }
 
 async fn run_task(
@@ -229,7 +248,7 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
         ChunkdbStripMode::Mirror => StripType::Mirror,
         ChunkdbStripMode::Ec => StripType::Ec,
     };
-    let response = client
+    let response = match client
         .allocate_chunk(AllocateChunkRequest {
             chunk_id: Some(id),
             write_granularity: args.write_granularity_kb,
@@ -240,10 +259,35 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
             copy_count: args.copy_count,
             chunk_type: ChunkType::Repo as i32,
         })
-        .await?;
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            // Allocation may commit before an RPC timeout or disconnect is
+            // observed. Keep the stable chunk ID as an ambiguous success;
+            // post-run chunk and DiskDB verification determines whether the
+            // mutation actually committed without issuing it a second time.
+            if ambiguous_allocation_error(&error) {
+                return Ok(id);
+            }
+            return Err(error);
+        }
+    };
     response.chunk.and_then(|chunk| chunk.id).ok_or_else(|| {
         crowdb_chunkdb_client::ChunkdbClientError::Rpc("allocate response has no chunk ID".into())
     })
+}
+
+fn ambiguous_allocation_error(error: &crowdb_chunkdb_client::ChunkdbClientError) -> bool {
+    use crowdb_chunkdb_client::ChunkdbClientError;
+
+    match error {
+        ChunkdbClientError::Unavailable(_)
+        | ChunkdbClientError::DeadlineExceeded(_)
+        | ChunkdbClientError::Unreachable(_) => true,
+        ChunkdbClientError::Rpc(message) => message.starts_with("rpc error:"),
+        _ => false,
+    }
 }
 
 async fn query(client: &ChunkdbClient, id: ChunkId) -> crowdb_chunkdb_client::Result<Chunk> {
@@ -272,7 +316,7 @@ async fn delete(client: &ChunkdbClient, id: ChunkId) -> crowdb_chunkdb_client::R
 }
 
 async fn verify_and_report(
-    client: &ChunkdbClient,
+    client: &Arc<ChunkdbClient>,
     diskdb: &DiskdbClient,
     baseline_busy: u64,
     args: &ChunkdbArgs,
@@ -280,41 +324,7 @@ async fn verify_and_report(
     elapsed: Duration,
     result: &mut TaskResult,
 ) -> ExitCode {
-    let mut physical = HashSet::new();
-    let mut expected_busy = 0u64;
-    for id in &result.live {
-        match query(client, *id).await {
-            Ok(chunk)
-                if chunk.state == ChunkState::Active as i32 || chunk.state == ChunkState::Sealed as i32 =>
-            {
-                for strip in chunk.strips {
-                    let unit_bytes = u64::from(strip.unit_kb) * 1024;
-                    let segments = match strip.strip {
-                        Some(Strip::MirrorStrip(value)) => value.segments,
-                        Some(Strip::EcStrip(value)) => value.segments,
-                        None => {
-                            result.errors += 1;
-                            continue;
-                        }
-                    };
-                    for segment in segments {
-                        expected_busy = expected_busy
-                            .saturating_add(u64::from(segment.unit_count).saturating_mul(unit_bytes));
-                        let Some(disk_id) = segment.disk_id else {
-                            result.errors += 1;
-                            continue;
-                        };
-                        if segment.owner_chunk != Some(*id)
-                            || !physical.insert((disk_id, segment.zone_index, segment.unit_offset))
-                        {
-                            result.errors += 1;
-                        }
-                    }
-                }
-            }
-            _ => result.errors += 1,
-        }
-    }
+    let expected_busy = verify_live_chunks(client, result).await;
     if mixed {
         for _ in 0..3 {
             if let Err(error) = compact_all(diskdb).await {
@@ -341,14 +351,21 @@ async fn verify_and_report(
         .saturating_mul(1_000_000_000)
         .checked_div(elapsed.as_nanos().max(1))
         .unwrap_or(0);
+    let blocks_per_chunk = match args.strip_type {
+        ChunkdbStripMode::Mirror => u128::from(args.copy_count),
+        ChunkdbStripMode::Ec => u128::from(args.data_num.saturating_add(args.code_num)),
+    }
+    .saturating_mul(u128::from(args.strip_count));
+    let block_allocs_per_sec = throughput.saturating_mul(blocks_per_chunk);
     println!(
-        "chunkdb bench workload={} strip_type={:?} stop={} elapsed={:.3}s ops={} ops_per_sec={} live={} errors={} p50_us={} p99_us={} busy_delta={} expected_busy_delta={}",
+        "chunkdb bench workload={} strip_type={:?} stop={} elapsed={:.3}s ops={} ops_per_sec={} block_allocs_per_sec={} live={} errors={} p50_us={} p99_us={} busy_delta={} expected_busy_delta={}",
         if mixed { "mix" } else { "allocate" },
         args.strip_type,
         if result.exhausted { "exhausted" } else { "deadline" },
         elapsed.as_secs_f64(),
         result.completed,
         throughput,
+        block_allocs_per_sec,
         result.live.len(),
         result.errors,
         percentile(&result.latencies, 50),
@@ -361,6 +378,74 @@ async fn verify_and_report(
     } else {
         eprintln!("chunkdb benchmark correctness verification failed");
         ExitCode::FAILURE
+    }
+}
+
+async fn verify_live_chunks(client: &Arc<ChunkdbClient>, result: &mut TaskResult) -> u64 {
+    let mut physical = HashSet::new();
+    let mut expected_busy = 0u64;
+    // Query in bounded parallel batches. At peak load, serial verification of
+    // every live chunk can take longer than the benchmark itself.
+    for ids in result.live.chunks(256) {
+        let mut queries = tokio::task::JoinSet::new();
+        for id in ids {
+            let client = Arc::clone(client);
+            let id = *id;
+            queries.spawn(async move { (id, query_eventually(&client, id).await) });
+        }
+        while let Some(joined) = queries.join_next().await {
+            let Ok((id, query_result)) = joined else {
+                result.errors += 1;
+                continue;
+            };
+            match query_result {
+                Ok(chunk)
+                    if chunk.state == ChunkState::Active as i32
+                        || chunk.state == ChunkState::Sealed as i32 =>
+                {
+                    for strip in chunk.strips {
+                        let unit_bytes = u64::from(strip.unit_kb) * 1024;
+                        let segments = match strip.strip {
+                            Some(Strip::MirrorStrip(value)) => value.segments,
+                            Some(Strip::EcStrip(value)) => value.segments,
+                            None => {
+                                result.errors += 1;
+                                continue;
+                            }
+                        };
+                        for segment in segments {
+                            expected_busy = expected_busy
+                                .saturating_add(u64::from(segment.unit_count).saturating_mul(unit_bytes));
+                            let Some(disk_id) = segment.disk_id else {
+                                result.errors += 1;
+                                continue;
+                            };
+                            if segment.owner_chunk != Some(id)
+                                || !physical.insert((disk_id, segment.zone_index, segment.unit_offset))
+                            {
+                                result.errors += 1;
+                            }
+                        }
+                    }
+                }
+                _ => result.errors += 1,
+            }
+        }
+    }
+    expected_busy
+}
+
+async fn query_eventually(client: &ChunkdbClient, id: ChunkId) -> crowdb_chunkdb_client::Result<Chunk> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match query(client, id).await {
+            Ok(chunk) => return Ok(chunk),
+            Err(error) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                drop(error);
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -410,6 +495,8 @@ fn valid_args(args: &ChunkdbArgs) -> bool {
     };
     let valid = args.duration_secs > 0
         && args.concurrency > 0
+        && args.chunkdb_connections > 0
+        && args.chunkdb_client_rpc_workers > 0
         && args.strip_count > 0
         && args.write_granularity_kb > 0
         && shape_ok;

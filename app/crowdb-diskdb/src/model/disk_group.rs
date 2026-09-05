@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
 use crowdb_protocol::common::{DiskId, HwStatus};
+use crowdb_protocol::diskdb::rpc::BusyBlockValue;
 use crowdb_protocol::DiskGroupId;
 use dashmap::DashMap;
 
@@ -23,6 +24,19 @@ pub type Bind = (u64, u64);
 
 /// Result of a successful allocation: `(disk, zone, range)`.
 pub type AllocClaim = (Arc<DdbDisk>, Arc<DdbZone>, AllocatedRange);
+
+// Keeps abandoned tentative allocations from growing the process without
+// bound. Eviction is safe: commit falls back to the durable KV record.
+const MAX_TENTATIVE_BLOCKS: usize = 262_144;
+
+/// Tentative allocation retained until the normal near-term commit arrives.
+#[derive(Clone)]
+pub struct TentativeBlock {
+    pub disk_id: DiskId,
+    pub zone_index: u32,
+    pub unit_offset: u64,
+    pub value: BusyBlockValue,
+}
 
 /// A disk-group manager — one per owned disk-group.
 pub struct DdbDiskGroup {
@@ -41,6 +55,9 @@ pub struct DdbDiskGroup {
     pos_v_disk_ctx: AtomicU64,
     /// Per-disk-group monotonic allocation-incarnation source.
     allocation_ts_source: AtomicU64,
+    /// `allocation_ts -> tentative allocation`; recovery-safe KV reads are
+    /// used when an entry is absent after restart or eviction.
+    tentative_blocks: DashMap<u64, TentativeBlock>,
 }
 
 impl DdbDiskGroup {
@@ -58,7 +75,42 @@ impl DdbDiskGroup {
             allocating_disks: ArcSwap::from_pointee(Vec::new()),
             pos_v_disk_ctx: AtomicU64::new(0),
             allocation_ts_source: AtomicU64::new(now_nanos()),
+            tentative_blocks: DashMap::new(),
         }
+    }
+
+    pub fn cache_tentative(&self, block: TentativeBlock) {
+        if self.tentative_blocks.len() >= MAX_TENTATIVE_BLOCKS {
+            let eviction_key = self.tentative_blocks.iter().next().map(|entry| *entry.key());
+            if let Some(allocation_ts) = eviction_key {
+                self.tentative_blocks.remove(&allocation_ts);
+            }
+        }
+        self.tentative_blocks.insert(block.value.allocation_ts, block);
+    }
+
+    pub fn tentative(&self, allocation_ts: u64) -> Option<TentativeBlock> {
+        self.tentative_blocks
+            .get(&allocation_ts)
+            .map(|entry| entry.clone())
+    }
+
+    pub fn remove_tentative(&self, allocation_ts: u64) -> bool {
+        self.tentative_blocks.remove(&allocation_ts).is_some()
+    }
+
+    pub fn remove_matching_tentative(
+        &self,
+        allocation_ts: u64,
+        disk_id: DiskId,
+        zone_index: u32,
+        unit_offset: u64,
+    ) -> bool {
+        self.tentative_blocks
+            .remove_if(&allocation_ts, |_, block| {
+                block.disk_id == disk_id && block.zone_index == zone_index && block.unit_offset == unit_offset
+            })
+            .is_some()
     }
 
     /// Add a disk to this disk-group. Rebuilds the allocatable disk set.

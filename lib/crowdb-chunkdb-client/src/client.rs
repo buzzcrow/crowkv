@@ -177,11 +177,29 @@ impl ChunkdbClient {
     /// Allocate a new chunk.
     pub async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
         let chunk_id = req.chunk_id;
-        self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
-            let req = req.clone();
-            async move { t.send_allocate_chunk(&ep, &req).await }
-        })
-        .await
+        let mut attempts = 0_u32;
+        let mut backoff = self.retry.initial_backoff;
+        loop {
+            let endpoint = self.endpoint_for_chunk(chunk_id.as_ref()).await?;
+            // Allocation is not idempotent at the DiskDB layer. Retry only
+            // NotMyRange, which is rejected before mutation. A transport
+            // failure after send is ambiguous and must not be replayed.
+            match self.rpc_transport.send_allocate_chunk(&endpoint, &req).await {
+                Err(error @ ChunkdbClientError::NotMyRange(_)) => {
+                    if attempts >= self.retry.max_retries {
+                        return Err(error);
+                    }
+                    attempts += 1;
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2);
+                    let _ = self.refresh_endpoints().await;
+                    if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id.as_ref()) {
+                        let _ = binding.refresh_and_route(id).await;
+                    }
+                }
+                result => return result,
+            }
+        }
     }
 
     /// Append strips to an existing chunk.

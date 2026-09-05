@@ -104,6 +104,12 @@ pub struct ChunkdbDeployRequest {
     pub rpc_port: u16,
     pub kv_server_mgmt_seeds: Vec<String>,
     pub allow_unsafe_ec: bool,
+    pub rpc_workers: Option<u32>,
+    pub kv_connections: Option<usize>,
+    pub kv_client_rpc_workers: Option<u32>,
+    pub diskdb_connections: Option<usize>,
+    pub diskdb_client_rpc_workers: Option<u32>,
+    pub metrics_interval: Option<u64>,
 }
 
 /// Spawn `crowdb-kv-server` locally. The `node.host` is folded into the
@@ -1013,13 +1019,17 @@ pub async fn deploy_chunkdb_local(
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
+        "[server]\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
         node.host,
         req.http_port,
         node.host,
         req.rpc_port,
         req.instance_id,
         seeds,
+        req.kv_connections.unwrap_or(1),
+        req.kv_client_rpc_workers.unwrap_or(2),
+        req.diskdb_connections.unwrap_or(1),
+        req.diskdb_client_rpc_workers.unwrap_or(2),
         req.allow_unsafe_ec,
     );
     std::fs::write(&config_path, config)?;
@@ -1041,6 +1051,12 @@ pub async fn deploy_chunkdb_local(
         .stdout(Stdio::from(output.try_clone()?))
         .stderr(Stdio::from(output))
         .kill_on_drop(false);
+    if let Some(workers) = req.rpc_workers {
+        command.arg("--rpc-workers").arg(workers.to_string());
+    }
+    if let Some(interval) = req.metrics_interval {
+        command.arg("--metrics-interval").arg(interval.to_string());
+    }
     let mut child = command.spawn()?;
     let pid = child.id().ok_or_else(|| Error::Validation {
         field: "pid".into(),
