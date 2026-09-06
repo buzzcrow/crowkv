@@ -28,6 +28,28 @@ fn pick_two_free_ports() -> (u16, u16) {
     (p1, p2)
 }
 
+#[cfg(target_os = "linux")]
+async fn assert_reaped(pid: u32) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+        if stat.is_err() {
+            return;
+        }
+        let state = stat
+            .unwrap()
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.trim_start().chars().next());
+        assert_ne!(state, Some('Z'), "deployed child {pid} became a zombie");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "deployed child {pid} was not reaped"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn deploy_local_and_observe_topology() {
     let Some(bin) = crowdb_kv_server_bin() else {
@@ -110,6 +132,10 @@ async fn deploy_local_and_observe_topology() {
 
     // Clean up: stop the process we spawned so the test doesn't leak.
     let _ = lifecycle::stop_pid(deployed.pid);
-    // Give the OS a moment to release the ports before the test ends.
+    // The console owns the child and must reap it after it exits; otherwise
+    // repeated deploy/stop flows accumulate zombies under the web process.
+    // Yield so the asynchronous reaper can run after the synchronous stop.
     tokio::time::sleep(Duration::from_millis(50)).await;
+    #[cfg(target_os = "linux")]
+    assert_reaped(deployed.pid).await;
 }

@@ -42,6 +42,7 @@ impl std::fmt::Debug for OpContext {
             .field("kv", &"Arc<CrowdbKvClient>")
             .field("config", &self.config)
             .field("discovery", &self.discovery.is_some())
+            .field("test_scenario", &self.test_scenario)
             .finish()
     }
 }

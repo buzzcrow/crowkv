@@ -290,6 +290,10 @@ needed for the lean surface.
 - The web server's test mode keeps spawned DiskDB heartbeat and group-0
   sync intervals at one second. Normal deployments retain DiskDB's
   production defaults.
+- Before group-0-backed tree reads, test mode validates the locally managed
+  group-0 process and refreshes its topology. Production uses monitor-cache
+  availability because group-0 may be hosted remotely and therefore has no
+  locally tracked process.
 
 ---
 

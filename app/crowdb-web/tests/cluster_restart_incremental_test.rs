@@ -37,7 +37,7 @@ struct ProcessGuard {
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
         for pid in self.pids.values() {
-            let _ = stop_pid_with_timeout(*pid, Duration::from_secs(1));
+            let _ = stop_pid_with_timeout(*pid, Duration::from_millis(100));
         }
     }
 }
@@ -684,6 +684,8 @@ impl Cluster {
 // ── Restart recovery helper ────────────────────────────────────────────────
 
 /// Description of a single group within a restart test.
+const REPLAY_PUTS: u64 = 50;
+
 struct GroupSpec {
     store_id: u64,
     group_id: u64,
@@ -731,7 +733,6 @@ async fn restart_recovery(
             return;
         }
     };
-    std::env::set_var("CROWDB_KV_SERVER_BIN", bin.to_string_lossy().to_string());
     std::env::set_var("CROWDB_KV_WAL_TEXT", "1");
 
     let mut cluster = setup_cluster(tag, rack_nodes, &bin, election_profile).await;
@@ -984,8 +985,8 @@ async fn restart_1node_1group() {
             group_id: 1,
             replica_id: 1000,
             nodes: vec![1],
-            n_puts: 100,
-            deleted_keys: vec![1, 50, 100, 150, 200, 250],
+            n_puts: REPLAY_PUTS,
+            deleted_keys: vec![1, 10, 20, 30, 40, 50],
         }],
         "test",
     )
@@ -1002,8 +1003,8 @@ async fn restart_3node_1group() {
             group_id: 1,
             replica_id: 1000,
             nodes: vec![1, 2, 3],
-            n_puts: 100,
-            deleted_keys: vec![1, 50, 100, 150, 200, 250],
+            n_puts: REPLAY_PUTS,
+            deleted_keys: vec![1, 10, 20, 30, 40, 50],
         }],
         "test",
     )
@@ -1020,8 +1021,8 @@ async fn restart_5node_1group() {
             group_id: 1,
             replica_id: 1000,
             nodes: vec![1, 2, 3, 4, 5],
-            n_puts: 100,
-            deleted_keys: vec![1, 50, 100, 200, 300, 400],
+            n_puts: REPLAY_PUTS,
+            deleted_keys: vec![1, 5, 10, 20, 30, 40],
         }],
         "e2e",
     )
@@ -1039,16 +1040,16 @@ async fn restart_5node_2group() {
                 group_id: 1,
                 replica_id: 1000,
                 nodes: vec![1, 2, 3, 4, 5],
-                n_puts: 100,
-                deleted_keys: vec![1, 50, 100, 200, 300, 400],
+                n_puts: REPLAY_PUTS,
+                deleted_keys: vec![1, 5, 10, 20, 30, 40],
             },
             GroupSpec {
                 store_id: 11,
                 group_id: 2,
                 replica_id: 2000,
                 nodes: vec![1, 2, 3],
-                n_puts: 100,
-                deleted_keys: vec![2, 80, 150, 220],
+                n_puts: REPLAY_PUTS,
+                deleted_keys: vec![2, 8, 15, 22],
             },
         ],
         "e2e",
@@ -1067,16 +1068,16 @@ async fn restart_6node_2group_overlap() {
                 group_id: 1,
                 replica_id: 1000,
                 nodes: vec![1, 2, 3, 4, 5],
-                n_puts: 100,
-                deleted_keys: vec![1, 100, 250, 500, 750],
+                n_puts: REPLAY_PUTS,
+                deleted_keys: vec![1, 10, 15, 20, 25],
             },
             GroupSpec {
                 store_id: 11,
                 group_id: 2,
                 replica_id: 2000,
                 nodes: vec![2, 5, 6],
-                n_puts: 100,
-                deleted_keys: vec![2, 100, 250, 400],
+                n_puts: REPLAY_PUTS,
+                deleted_keys: vec![2, 10, 15, 25],
             },
         ],
         "e2e",

@@ -73,7 +73,13 @@ async fn rack_node_server_lifecycle() {
     assert_eq!(code, 0, "server list stderr={stderr}");
     assert!(stdout.contains('1'), "stdout={stdout}");
 
-    // kv server restart — restart the server on node 1.
+    // kv server restart — recover node 1 after an out-of-band process exit.
+    let pid = g0.pid;
+    tokio::task::spawn_blocking(move || {
+        let _ = crowdb_console_shared::lifecycle::stop_pid_with_timeout(pid, Duration::from_millis(100));
+    })
+    .await
+    .unwrap();
     let (code, stdout, stderr) = run(
         &cli,
         g0.mgmt_port,
@@ -82,7 +88,18 @@ async fn rack_node_server_lifecycle() {
     );
     assert_eq!(code, 0, "server restart stdout={stdout}\nstderr={stderr}");
 
-    // kv server stop — stop the server on node 1.
+    let restarted = crowdb_console_shared::ConsoleConfig::load(&g0.config_path).unwrap();
+    let restarted_pid = restarted.server_for_node(1).unwrap().pid.unwrap();
+    tokio::task::spawn_blocking(move || {
+        let _ = crowdb_console_shared::lifecycle::stop_pid_with_timeout(
+            restarted_pid,
+            Duration::from_millis(100),
+        );
+    })
+    .await
+    .unwrap();
+
+    // kv server stop — clear the deployment state after an out-of-band exit.
     let (code, _, stderr) = run(
         &cli,
         g0.mgmt_port,
@@ -90,6 +107,8 @@ async fn rack_node_server_lifecycle() {
         &["kv", "server", "stop", "--node", "1"],
     );
     assert_eq!(code, 0, "server stop stderr={stderr}");
+    let stopped = crowdb_console_shared::ConsoleConfig::load(&g0.config_path).unwrap();
+    assert!(stopped.server_for_node(1).unwrap().pid.is_none());
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 }

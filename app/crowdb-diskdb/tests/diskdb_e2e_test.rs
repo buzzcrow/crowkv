@@ -465,12 +465,11 @@ async fn diskdb_e2e_blind_free_validation_at_compaction() {
 }
 
 /// E2E: allocate ALL space across 3 disks × 4 zones × 128 units = 1536
-/// units, then free ALL of it. Verifies the full fill/drain cycle
-/// against a real KV cluster: every unit gets a `BusyBlockValue`, then
-/// every unit gets a `FreeBlockValue` and the `BusyBlockKey` is gone.
-/// Uses `aggregate_usage` for bulk verification + samples a subset of
-/// KV records for persistence checks (1536 individual KV gets would
-/// be too slow).
+/// units in 8-unit ranges, then free ALL of it. Verifies the full
+/// fill/drain cycle against a real KV cluster: every range gets a
+/// `BusyBlockValue`, then a `FreeBlockValue` while the `BusyBlockKey`
+/// remains until compaction. Uses `aggregate_usage` for bulk verification
+/// and samples a subset of KV records for persistence checks.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn diskdb_e2e_allocate_all_free_all() {
@@ -513,7 +512,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
         .get_disk_group(DG_ID)
         .expect("disk-group should be in container");
 
-    let total_cap = 3 * 4 * 128u64; // 3 disks × 4 zones × 128 units
+    let total_cap = 3 * CAPACITY_UNITS; // 3 disks × 4 zones × 128 units
     let total_cap_bytes = total_cap * u64::from(UNIT_SIZE_BYTES);
     let owner_chunk = make_chunk_id(0, 42);
     let metrics = crowdb_diskdb::metrics::DiskdbMetrics::disabled();
@@ -568,14 +567,16 @@ async fn diskdb_e2e_allocate_all_free_all() {
     verify_invariant("initial empty");
 
     // ── Phase 1: Allocate ALL space ───────────────────────────────
-    // Use allocate_block (singular) in a loop — allocate_blocks
-    // (plural) enforces anti-affinity (excludes used disks), so it
-    // can only allocate up to disk_count per call.
+    // Allocate one block per disk in each batch. Anti-affinity limits
+    // each call to disk_count, while batching cuts KV round trips.
     let mut all_segments: Vec<crowdb_protocol::diskdb::rpc::Segment> = Vec::new();
     let alloc_kv = cluster.make_ddb_kv_client();
-    while let Ok(seg) = alloc::allocate_block(
+    let mut allocated_units = 0u64;
+    while let Ok(segments) = alloc::allocate_blocks(
         &dg,
-        1, // unit_count
+        8, // unit_count
+        3, // count
+        &[],
         &owner_chunk,
         UNIT_SIZE_BYTES,
         &alloc_kv,
@@ -585,14 +586,18 @@ async fn diskdb_e2e_allocate_all_free_all() {
     )
     .await
     {
-        all_segments.push(seg);
+        allocated_units += segments
+            .iter()
+            .map(|segment| u64::from(segment.unit_count))
+            .sum::<u64>();
+        all_segments.extend(segments);
         // Check invariant periodically during allocation.
-        if all_segments.len() % 500 == 0 {
-            verify_invariant(&format!("allocating {} units", all_segments.len()));
+        if allocated_units % (total_cap / 4) == 0 {
+            verify_invariant(&format!("allocating {allocated_units} units"));
         }
     }
-    eprintln!("allocated {} units (expected {total_cap})", all_segments.len());
-    assert_eq!(all_segments.len() as u64, total_cap, "should fill all capacity");
+    eprintln!("allocated {allocated_units} units (expected {total_cap})");
+    assert_eq!(allocated_units, total_cap, "should fill all capacity");
 
     // Verify aggregate usage is full + invariant holds.
     verify_invariant("full");
@@ -622,19 +627,22 @@ async fn diskdb_e2e_allocate_all_free_all() {
     eprintln!("sample busy records verified in kv");
 
     // ── Phase 2: Free ALL space ───────────────────────────────────
-    // Batch-free 100 at a time, checking the invariant periodically.
+    // Batch-free 48 ranges at a time, checking the invariant periodically.
     let free_kv = cluster.make_ddb_kv_client();
-    let mut freed_count = 0usize;
-    for chunk in all_segments.chunks(100) {
+    let mut freed_units = 0u64;
+    for chunk in all_segments.chunks(48) {
         alloc::free_blocks(&dg, chunk, &free_kv)
             .await
             .expect("free batch should succeed");
-        freed_count += chunk.len();
-        if freed_count % 500 == 0 {
-            verify_invariant(&format!("freeing {freed_count} units"));
+        freed_units += chunk
+            .iter()
+            .map(|segment| u64::from(segment.unit_count))
+            .sum::<u64>();
+        if freed_units % (total_cap / 4) == 0 {
+            verify_invariant(&format!("freeing {freed_units} units"));
         }
     }
-    eprintln!("freed all {} units", all_segments.len());
+    eprintln!("freed all {freed_units} units");
 
     // Persist-only model: free does NOT clear the bitmap. Aggregate
     // usage still shows full — the bitmap is a conservative over-

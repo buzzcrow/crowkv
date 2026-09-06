@@ -38,7 +38,7 @@ async fn spawn_web_with_path(path: std::path::PathBuf) -> SocketAddr {
         .expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     let cfg = ConsoleConfig::load(&path).unwrap_or_default();
-    let state = AppState::with_config(cfg, Some(path));
+    let state = AppState::with_config(cfg, Some(path)).with_test_mode(true);
     tokio::spawn(async move {
         axum::serve(listener, router(state)).await.unwrap();
     });
@@ -324,8 +324,12 @@ async fn multiple_racks_and_nodes_create_expected_workspaces() {
         .exists());
     assert!(std::fs::read_dir(dir.join("N-2/bin")).unwrap().next().is_none());
 
-    let _ = stop_pid_with_timeout(pid1, Duration::from_secs(5));
-    let _ = stop_pid_with_timeout(pid10, Duration::from_secs(5));
+    tokio::task::spawn_blocking(move || {
+        let _ = stop_pid_with_timeout(pid1, Duration::from_millis(100));
+        let _ = stop_pid_with_timeout(pid10, Duration::from_millis(100));
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -466,9 +470,6 @@ async fn deploy_then_restart_local_server() {
     let old_pid = u32::try_from(v["pid"].as_u64().unwrap()).unwrap();
     guard.pids.insert("n1-old".into(), old_pid);
 
-    // Pre-position CROWDB_KV_SERVER_BIN so the restart's fallback path
-    // (no binary override in the body) still finds the test binary.
-    std::env::set_var("CROWDB_KV_SERVER_BIN", bin.to_string_lossy().to_string());
     let (s, v) = json_post(&client, &format!("{base}/api/nodes/1/server/restart"), json!({})).await;
     assert!(s.is_success(), "restart: {s} {v}");
     let new_pid = u32::try_from(v["pid"].as_u64().unwrap()).unwrap();

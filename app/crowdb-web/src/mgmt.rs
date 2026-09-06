@@ -314,11 +314,101 @@ pub(crate) async fn build_hardware_client(state: &AppState) -> Option<crowdb_kv_
     Some(crowdb_kv_client::HardwareClient::from_shared(kv))
 }
 
-/// Cheap check: is group-0 (store 0) known to the monitor cache?
-/// Use this to gate group-0 sysdata reads without logging warnings
-/// on every poll when the cluster isn't initialized yet.
+/// Check whether group-0 (store 0) is available for a sysdata read.
+///
+/// Production only consults the monitor cache because group-0 may be
+/// hosted remotely and its process is not owned by this console. E2E
+/// mode owns every local server process, so it actively refreshes the
+/// cached group-0 nodes before allowing an RPC. This prevents one test's
+/// stale leader endpoint from consuming the retry budget in a later
+/// test after `/internal/reset`.
 pub(crate) async fn group0_available(state: &AppState) -> bool {
-    state.monitor_cache.resolve_store(0).await.is_some()
+    let Some(store) = state.monitor_cache.resolve_store(0).await else {
+        return false;
+    };
+    if !state.test_mode {
+        return true;
+    }
+
+    let mut live_nodes = Vec::new();
+    for node_id in store.nodes {
+        let configured = {
+            let cfg = state.config.read().unwrap();
+            cfg.server_for_node(node_id).is_some()
+        };
+        let alive = state
+            .runtime_pid(node_id)
+            .is_some_and(crowdb_console_shared::lifecycle::process_is_alive);
+        if configured && alive {
+            live_nodes.push(node_id);
+        } else {
+            state
+                .monitor_cache
+                .mark_down(node_id, "E2E group-0 process is not live")
+                .await;
+        }
+    }
+    if live_nodes.is_empty() {
+        return false;
+    }
+
+    futures::future::join_all(
+        live_nodes
+            .into_iter()
+            .map(|node_id| refresh_node_cache(state, node_id)),
+    )
+    .await;
+    state.monitor_cache.group0_leader_endpoint().await.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crowdb_console_shared::cluster::NodeStore;
+    use crowdb_console_shared::monitor::NodeRecord;
+    use std::collections::BTreeMap;
+
+    async fn seed_cached_group0(state: &AppState) {
+        let mut stores = BTreeMap::new();
+        stores.insert(
+            0,
+            NodeStore {
+                node_id: 7,
+                store_id: 0,
+                listen_addr: Some("127.0.0.1:10001".into()),
+                groups: Vec::new(),
+            },
+        );
+        state
+            .monitor_cache
+            .set_node_report(
+                7,
+                NodeRecord {
+                    health: NodeHealth::Up,
+                    last_seen_ms: 1,
+                    stores,
+                    last_error: None,
+                    recovering: false,
+                },
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn production_group0_availability_does_not_require_local_pid() {
+        let state = AppState::default();
+        seed_cached_group0(&state).await;
+
+        assert!(group0_available(&state).await);
+    }
+
+    #[tokio::test]
+    async fn e2e_group0_availability_rejects_stale_cache_without_live_pid() {
+        let state = AppState::default().with_test_mode(true);
+        seed_cached_group0(&state).await;
+
+        assert!(!group0_available(&state).await);
+    }
 }
 
 // ── Metrics proxy (R11) ───────────────────────────────────────────────

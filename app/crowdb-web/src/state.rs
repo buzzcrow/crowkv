@@ -322,10 +322,18 @@ impl AppState {
         c
     }
 
-    /// Drop the cached `CrowdbKvClient` so the next KV request rebuilds
-    /// the topology cache from scratch. Called on `/internal/reset`.
-    pub async fn clear_kv_client(&self) {
+    /// Drop every client that retains cluster topology so the next
+    /// request rebuilds from the post-reset cluster. The discovery and
+    /// `DiskDB` clients both retain the shared `CrowdbKvClient`, so
+    /// clearing only `kv_client` would leave its old group-0 leader hint
+    /// reachable through those wrappers.
+    pub async fn clear_cluster_clients(&self) {
+        *self.diskdb_client.write().await = None;
+        *self.discovery_client.write().await = None;
         *self.kv_client.write().await = None;
+        if let Some(transport) = self.kv_rpc_transport.read().await.as_ref() {
+            transport.clear_connections();
+        }
     }
 
     /// Get or lazily build the cached `ServiceDiscoveryClient`. Shares
@@ -701,6 +709,29 @@ mod tests {
         assert!(
             Arc::ptr_eq(ctx.kv_arc(), &cached),
             "OpContext must share the cached CrowdbKvClient"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_cluster_clients_drops_every_topology_owner() {
+        let state = AppState::default();
+        let old_kv = state.kv_client().await;
+        let old_discovery = state.discovery_client().await;
+        *state.diskdb_client.write().await = Some(crowdb_diskdb_client::DiskdbClient::new(
+            old_discovery.registry().clone(),
+            Arc::new(crowdb_diskdb_client::DiskdbRpcTransport::new()),
+        ));
+
+        state.clear_cluster_clients().await;
+
+        assert!(state.kv_client.read().await.is_none());
+        assert!(state.discovery_client.read().await.is_none());
+        assert!(state.diskdb_client.read().await.is_none());
+
+        let rebuilt_kv = state.kv_client().await;
+        assert!(
+            !Arc::ptr_eq(&old_kv, &rebuilt_kv),
+            "a reset must not reuse the prior topology cache"
         );
     }
 

@@ -51,11 +51,12 @@ impl Drop for ServerHandle {
             match self.child.try_wait() {
                 Ok(Some(_)) | Err(_) => break,
                 Ok(None) => {
-                    if start.elapsed() >= Duration::from_secs(1) {
+                    if start.elapsed() >= Duration::from_millis(500) {
                         let _ = std::process::Command::new("kill")
                             .arg("-KILL")
                             .arg(pid.to_string())
                             .status();
+                        let _ = self.child.wait();
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(10));

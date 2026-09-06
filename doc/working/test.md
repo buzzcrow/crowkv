@@ -109,7 +109,7 @@ Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = T
 | `test-console-shared` | 64  | 39.2 s | 9.36 s        | 179.72 s      | ✅              |
 | `test-console-cli`  | 17    | 69.4 s | 44.09 s       | 19.15 s       | ⚠️ (5 ignored)  |
 | `test-console-server` | 74  | 50.7 s | 42.72 s       | 90.31 s       | ✅              |
-| `test-console-ui`   | 138   | 165.7 s | 270.0 s      | 284.5 s       | ✅              |
+| `test-console-ui`   | 138   | 165.7 s | 270.0 s      | 209.23 s      | ✅              |
 
 ---
 
@@ -146,11 +146,18 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
 ## Console UI E2E (`test-console-ui`) — 2026-09-06
 
 Source: `app/crowdb-web/ui/e2e/`. 138 tests (84 Vitest + 54 Playwright),
-~4.7 min (single worker, real backend + real `crowdb-kv-server` subprocess,
-system Chrome). All 54 Playwright tests pass; 0 failures.
+3 min 29.23 s for the latest incremental build (single worker, real backend +
+real `crowdb-kv-server` subprocess, system Chrome). All 54
+Playwright tests pass; 0 failures.
 
-Vitest: 7 files, 84 tests, 2.75 s.
-Playwright: 54 tests, 4.7 min (284.5 s).
+Vitest: 7 files, 84 tests, 2.88 s. Playwright: 54 tests passed in 3.3 min.
+The task total includes the Rust build, Vitest, frontend production build,
+web-server startup, Playwright, and teardown.
+
+Before the stale group-0 fix, the clean-build baseline was 376.954 s and an
+independent incremental run reported 54 Playwright passes in 4.4 min. A second
+measured repeat took 443 s but is excluded from the passing baseline because
+the web server exited during `30-kv-ops-basic`.
 
 ### Fixes applied (2026-09-06)
 
@@ -169,47 +176,67 @@ Playwright: 54 tests, 4.7 min (284.5 s).
   `diskdbNodeIds` and DDB tree items) to remain stale, so DDB-xxx items
   were absent from the cluster tree even though the API confirmed DiskDB
   registration.
+- `/internal/reset` now clears every client wrapper that owns or retains the
+  shared KV topology cache: DiskDB, service discovery, and the direct KV
+  client. It also clears cached RPC connections. Previously only the direct
+  `kv_client` slot was cleared; discovery and DiskDB wrappers kept the old
+  group-0 leader (`127.0.0.1:10001`) alive across tests.
+- `group0_available` performs an active local-process and topology check only
+  when the web server runs in E2E test mode. A cached group-0 node without a
+  live tracked process is marked down, and live candidates are refreshed
+  before group-0-backed tree reads. Production remains cache-based because a
+  production console cannot assume that a remotely hosted group-0 process has
+  a locally tracked PID.
 
-### Slowest Playwright tests (per-test wall-clock, 2026-09-06)
+### Slowest Playwright tests (per-test wall-clock, latest run, 2026-09-06)
+
+The latest full incremental run took 0h 3m 29.23s; Playwright reported
+3.3 min. Individual test durations below are seconds.
 
 | Duration | Spec:line | Test |
 | -------- | --------- | ---- |
-| 7.7 s    | `31-kv-ops-advanced:98` | prefix/selected/inline delete + copy, load more, all-groups |
-| 7.7 s    | `13-todo-ui-behavior:28` | creates three fully-enabled nodes with disjoint DiskDB listeners |
-| 6.5 s    | `51-chunk-capacity-disk:100` | disk maintenance operations, set-status, and health badges |
-| 5.1 s    | `50-chunk-capacity-disk-group:565` | full deploy flow: deploy diskdb via UI, restart, stop, delete |
-| 4.1 s    | `53-chunk-capacity-canvas:212` | datacenter root in Capacity sidebar; inspector shows cluster totals |
-| 4.0 s    | `90-flow-full-chain:18` | rack → node → server → store → group → replica → kv |
-| 3.8 s    | `22-kv-topology:354` | two groups on overlapping 3-node subsets operate independently |
-| 3.7 s    | `10-cluster-rack-node:244` | confirm-gates store, node, and rack deletion |
-| 2.8 s    | `50-chunk-capacity-disk-group:428` | assign disk-group to diskdb via UI (owner + bind) |
-| 2.0 s    | `11-cluster-server-lifecycle:231` | deleting a node cascades service shutdown |
+| 16.9 s | `13-todo-ui-behavior:29` | creates three fully-enabled nodes and keeps derived DiskDB listeners disjoint |
+| 9.2 s  | `21-kv-reconfig:254` | stopping a non-leader keeps quorum, stopping the leader triggers reelection |
+| 8.1 s  | `13-todo-ui-behavior:269` | closes the node dialog and preserves KV when DiskDB deployment fails |
+| 7.6 s  | `31-kv-ops-advanced:98` | prefix/selected/inline delete + copy, load more, all-groups |
+| 6.6 s  | `21-kv-reconfig:313` | deleting non-leader nodes preserves quorum down to majority |
+| 6.3 s  | `21-kv-reconfig:379` | stopping shared node degrades both stores, restart recovers |
+| 6.3 s  | `51-chunk-capacity-disk:100` | disk maintenance operations, set-status, and health badges |
+| 5.4 s  | `10-cluster-rack-node:32` | creates racks and nodes through the UI and verifies the real backend |
+| 5.2 s  | `50-chunk-capacity-disk-group:565` | full deploy flow: deploy DiskDB via UI, restart, stop, delete |
+| 5.0 s  | `01-shell-ui-behaviors:31` | dialog defaults, cancel, and tree interactions |
 
-### Notable slow steps (>= 3 s, from `stepTimer` instrumentation)
+### Slow steps (>= 5 s, from `stepTimer` instrumentation, latest run)
 
-| Duration  | Spec | Step label |
-| --------- | ---- | ---------- |
-| 3.6 s     | `50-chunk-capacity-disk-group` | `disk-group: DG + disk CRUD UI` |
+No instrumented step reached five seconds. The slowest recorded setup steps
+were the three node deployments in `13-todo-ui-behavior` at 3.160 s, 4.236 s,
+and 2.831 s; its combined topology setup was 4.186 s.
 
-### Runtime improvements completed
+### Runtime investigation result
 
-- **`10-cluster-rack-node:244`: 54.8 s → 3.7 s.** Server shutdown is
-  reaped in the background and deletion skips dead group-0 retry paths.
-- **`11-cluster-server-lifecycle:231`: 24.6 s → 2.0 s.** The same
-  non-blocking shutdown and bounded leader refresh remove the lifecycle
-  retry stall.
-- **`90-flow-full-chain:18`: 11.9 s → 4.0 s.** The spec now runs one
-  complete single-node chain; dedicated reconfiguration specs retain the
-  multi-node Add Replica coverage.
-- **`50-chunk-capacity-disk-group:428`: 10.8 s → 2.8 s.** Test-mode
-  DiskDB deployments use one-second heartbeat and group-0 sync intervals;
-  production defaults remain unchanged.
+- **`10-cluster-rack-node:244`: 54.489 s → 3.3 s in full-suite order.** The
+  51.809 s `del-gate: delete rack UI` step came from stale client ownership,
+  not rack deletion itself. An earlier flow stopped group-0, but cached
+  discovery/DiskDB wrappers retained the old shared KV client after reset.
+  The later tree rebuild saw cached store 0 and retried that dead leader. Full
+  client invalidation at reset plus the E2E-only live topology check removes
+  the stale endpoint before disk-group reads. An ordered two-test reproduction
+  also passes with the target at 3.4 s.
+- **`13-todo-ui-behavior:29` (16.9 s)** — no single boundary exceeded five
+  seconds. The total is cumulative: three real KV +
+  DiskDB deployments, topology creation, and cross-domain ownership checks.
+- **`21-kv-reconfig:254` (9.2 s)** is expected election work and has no new
+  obvious slow boundary. Tests in the 5–8 s range likewise have no single
+  five-second instrumented step, so they remain acceptable.
+- The former lifecycle cascade, full-chain flow, and DiskDB capacity assignment
+  completed in 3.8 s, 4.0 s, and 2.8 s respectively.
 
 ### UI E2E optimization and diagnosis lessons
 
-- Remeasure the exact test before editing. The 54.8 s and 24.6 s records were
-  stale after lifecycle changes already in the worktree; current baselines
-  were 3.7 s and 2.2 s before further work.
+- Remeasure both the exact test and its original suite position before editing.
+  Before this fix, rack deletion was about 3.7 s alone but 54–55 s after the
+  preceding shell flows because the ordered run retained a dead group-0
+  endpoint.
 - Use `stepTimer` around the mutation response, service-state poll, DOM
   refresh, and teardown. Command wall time includes the frontend build and web
   server startup and is not the per-test regression signal.
@@ -223,6 +250,12 @@ Playwright: 54 tests, 4.7 min (284.5 s).
 - Keep timing controls at the process boundary. DiskDB's ten-second cadence
   became one second only under web-server test mode, while production defaults
   stayed unchanged.
+- Test-only liveness shortcuts must use resources the test harness owns. Local
+  PID checks are valid for E2E-spawned servers but cannot define production
+  group-0 availability, where the leader may be remote.
+- Reset every owner of shared cached state, not only the factory slot that
+  originally created it. Wrapper clients can retain an `Arc` to topology and
+  connection caches after the direct slot has been cleared.
 - Poll lifecycle APIs and assert the resulting DOM instead of sleeping. Reuse
   one API request context within a poll phase.
 - Treat strict-locator failures as missing scope: target `main`, the named

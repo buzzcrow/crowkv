@@ -350,11 +350,11 @@ async fn deploy_local_in_workspace(
         }
     }
 
-    // Detach: drop the Child handle so the process is not killed when
-    // this function returns. The pid is the user's tracking handle.
-    std::mem::forget(child);
-
     wait_for_ready(&mgmt_url, Duration::from_secs(30)).await?;
+
+    // Keep ownership of the child in a reaper task so exited children do not
+    // become zombies under the console process.
+    tokio::spawn(reap_child(child, pid, "crowdb-kv-server"));
 
     Ok(DeployedServer {
         server_id: req.server_id.clone(),
@@ -362,6 +362,13 @@ async fn deploy_local_in_workspace(
         rpc_url,
         pid,
     })
+}
+
+async fn reap_child(mut child: Child, pid: u32, service: &'static str) {
+    match child.wait().await {
+        Ok(status) => debug!(pid, service, %status, "child exited"),
+        Err(error) => warn!(pid, service, %error, "failed to reap child"),
+    }
 }
 
 /// Send SIGTERM to a tracked pid on the **local** host. Returns
@@ -659,6 +666,9 @@ pub struct DiskdbDeployRequest {
     pub kv_connections: Option<usize>,
     /// KV client crowdb-rpc worker override.
     pub kv_client_rpc_workers: Option<u32>,
+    /// Keepalive and group-0 sync interval override in seconds.
+    /// `None` preserves the `crowdb-diskdb` defaults.
+    pub keepalive_interval_secs: Option<u32>,
     /// Main listener port (diskdb `listen_addr`).
     pub listen_port: u16,
     /// HTTP management port (diskdb `http_listen_addr`).
@@ -1013,9 +1023,9 @@ pub async fn deploy_diskdb_local(
     let to = log_dir.join(format!("crowdb-diskdb-{pid}.out.log"));
     let _ = std::fs::rename(&from, &to);
     wait_for_diskdb_ready(&mut child, &mgmt_url, &to, pid, Duration::from_secs(30)).await?;
-    // Detach only after readiness succeeds so the child can be polled for an
-    // early exit without changing ownership of a successful process.
-    std::mem::forget(child);
+    // Keep ownership of the child in a reaper task so exited children do not
+    // become zombies under the console process.
+    tokio::spawn(reap_child(child, pid, "crowdb-diskdb"));
     Ok(DeployedDiskdb {
         server_id: req.server_id.clone(),
         endpoint,

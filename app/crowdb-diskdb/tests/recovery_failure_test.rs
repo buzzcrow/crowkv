@@ -1,21 +1,28 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-mod common;
-
 use std::sync::Arc;
+use std::time::Duration;
 
-use common::cluster::KvCluster;
+use crowdb_diskdb::ddb_kv_client::DdbKvClient;
 use crowdb_diskdb::recovery::ZoneLoader;
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, RetryConfig};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{DiskType, DiskValue};
 
 #[tokio::test]
 async fn failed_recovery_does_not_return_writable_disk_group() {
-    let cluster = KvCluster::start().await;
-    let _hardware = cluster.make_hardware_client();
-    let _registry = cluster.make_service_registry_client();
-    let loader = ZoneLoader::new(Arc::new(cluster.make_ddb_kv_client()), 1);
+    let mut config = ClientConfig::new(Vec::new());
+    config.retry = RetryConfig {
+        max_retries: 1,
+        unknown_leader_wait: Duration::from_millis(10),
+        backoff_base: Duration::from_millis(10),
+        backoff_max: Duration::from_millis(10),
+    };
+    let kv = CrowdbKvClient::new(config);
+    let port = crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen);
+    kv.seed_leader(0, 999, format!("127.0.0.1:{port}"));
+    let loader = ZoneLoader::new(Arc::new(DdbKvClient::new(kv)), 1);
     let disk = DiskValue {
         disk_type: DiskType::BlockSsd as i32,
         capacity_units: 128,
