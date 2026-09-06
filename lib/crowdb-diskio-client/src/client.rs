@@ -49,6 +49,14 @@ pub enum DiskIoRetCode {
     ConnectionError = 6,
 }
 
+#[derive(Clone, Copy)]
+struct WriteTarget {
+    disk_id: DiskId,
+    zone_index: u32,
+    zone_offset: u64,
+    size: u32,
+}
+
 impl From<i16> for DiskIoRetCode {
     fn from(v: i16) -> Self {
         match v {
@@ -135,10 +143,12 @@ impl DiskioClient {
         self.write_buffer(
             server,
             conn,
-            disk_id,
-            zone_index,
-            zone_offset,
-            size,
+            WriteTarget {
+                disk_id,
+                zone_index,
+                zone_offset,
+                size,
+            },
             Buffer::from_vec(data),
         )
     }
@@ -162,37 +172,35 @@ impl DiskioClient {
         self.write_buffer(
             server,
             conn,
-            disk_id,
-            zone_index,
-            zone_offset,
-            size,
+            WriteTarget {
+                disk_id,
+                zone_index,
+                zone_offset,
+                size,
+            },
             Buffer::from_owned_bytes(data),
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn write_buffer(
         &self,
         server: &RpcServer,
         conn: &Connection,
-        disk_id: DiskId,
-        zone_index: u32,
-        zone_offset: u64,
-        size: u32,
+        target: WriteTarget,
         data_buf: Buffer,
     ) -> Result<CallFuture, DiskioError> {
         let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
-        let fb_disk_id = disk_id.to_fb();
+        let fb_disk_id = target.disk_id.to_fb();
         let off = FBDiskWriteRequest::create(
             &mut fbb,
             &FBDiskWriteRequestArgs {
                 id: req_id,
                 rpc_create_nano: 0,
                 disk_id: Some(&fb_disk_id),
-                zone_index,
-                zone_offset,
-                size,
+                zone_index: target.zone_index,
+                zone_offset: target.zone_offset,
+                size: target.size,
             },
         );
         fbb.finish(off, None);

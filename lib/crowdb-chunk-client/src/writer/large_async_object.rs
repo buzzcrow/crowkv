@@ -106,6 +106,9 @@ impl LargeAsyncObjectWriter {
     pub(crate) async fn seal_current(&mut self) -> Result<()> {
         if let Some(mut cw) = self.chunk_writer.take() {
             let location = cw.seal().await?;
+            let (stalls, stall_time) = cw.preparation_metrics();
+            self.preparation_stalls += stalls;
+            self.preparation_stall_time += stall_time;
             let bytes = location.length;
             if bytes > 0 {
                 self.locations.push(ProtoLocation {
@@ -251,7 +254,10 @@ impl LargeAsyncObjectWriter {
             let _ = self.abort_pipeline().await;
             return Err(IoError::SourceRead(error.to_string()));
         }
-        drive_result?;
+        if let Err(error) = drive_result {
+            let _ = self.abort_pipeline().await;
+            return Err(error);
+        }
 
         self.seal_current().await?;
         if let Some(handle) = self.chunk_prefetch_handle.take() {

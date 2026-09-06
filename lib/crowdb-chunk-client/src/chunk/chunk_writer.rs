@@ -10,6 +10,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -51,6 +52,8 @@ pub struct ChunkWriter {
     pub(crate) prefetch_handle: Option<JoinHandle<()>>,
     pub(crate) prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     pub(crate) write_cursor_shared: Arc<AtomicU32>,
+    pub(crate) preparation_stalls: u64,
+    pub(crate) preparation_stall_time: Duration,
 }
 
 impl ChunkWriter {
@@ -76,6 +79,8 @@ impl ChunkWriter {
             prefetch_handle: None,
             prefetch_rx: None,
             write_cursor_shared: Arc::new(AtomicU32::new(0)),
+            preparation_stalls: 0,
+            preparation_stall_time: Duration::ZERO,
         }
     }
 
@@ -209,11 +214,19 @@ impl ChunkWriter {
             // append_chunk calls).
             let Some(rx) = self.prefetch_rx.as_mut() else {
                 // No prefetch channel — inline append as last resort.
-                let new_chunk = self.append_strip().await?;
+                let started = Instant::now();
+                self.preparation_stalls += 1;
+                let result = self.append_strip().await;
+                self.preparation_stall_time += started.elapsed();
+                let new_chunk = result?;
                 self.continue_strip(new_chunk)?;
                 return Ok(());
             };
-            match rx.recv().await {
+            let started = Instant::now();
+            self.preparation_stalls += 1;
+            let result = rx.recv().await;
+            self.preparation_stall_time += started.elapsed();
+            match result {
                 Some(Ok(new_chunk)) => {
                     self.chunk = Some(Arc::new(new_chunk));
                     // Loop back: check if the next strip is now available.
@@ -361,6 +374,10 @@ impl ChunkWriter {
     /// layer checks this after each push to decide chunk rotation.
     pub fn is_full(&self) -> bool {
         self.bytes_in_chunk >= self.config.max_chunk_size
+    }
+
+    pub(crate) fn preparation_metrics(&self) -> (u64, Duration) {
+        (self.preparation_stalls, self.preparation_stall_time)
     }
 
     /// Append a new strip to the current chunk via `append_chunk` RPC.
