@@ -159,6 +159,7 @@ pub unsafe extern "C" fn crowdb_hw_list_disks_in_group(
     }
     let hw = (*(client as *const HardwareClient)).clone();
     spawn_op(callback, user_data, move || async move {
+        hw.kv().refresh_topology().await.map_err(|e| e.to_string())?;
         let disks = hw
             .list_disks_in_group(rack_id, node_id, dg_id)
             .await
@@ -292,6 +293,7 @@ pub unsafe extern "C" fn crowdb_svc_heartbeat_diskio(
         }
     };
     spawn_op(callback, user_data, move || async move {
+        svc.kv().refresh_topology().await.map_err(|e| e.to_string())?;
         svc.heartbeat_diskio(instance_id, &endpoint, &dg_ids, &usages)
             .await
             .map_err(|e| e.to_string())?;

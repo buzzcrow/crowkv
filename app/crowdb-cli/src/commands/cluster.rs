@@ -282,11 +282,12 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                             return print_json(cli, &summary);
                         }
                         println!(
-                            "local-deploy combined: {} KV nodes, {} racks, {} DiskDB, {} ChunkDB",
+                            "local-deploy combined: {} KV nodes, {} racks, {} DiskDB, {} ChunkDB, {} DiskIO",
                             summary.kv_nodes,
                             summary.racks,
                             summary.diskdb_instances,
-                            summary.chunkdb_instances
+                            summary.chunkdb_instances,
+                            summary.diskio_instances
                         );
                         ExitCode::SUCCESS
                     }

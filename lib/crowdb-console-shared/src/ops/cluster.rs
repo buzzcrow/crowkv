@@ -22,7 +22,7 @@ use crate::clients::http::ServerClient;
 use crate::config::{NodeEntry, RackEntry, ReplicaEntry, ServerEntry, ServiceType};
 use crate::error::{Error, Result};
 use crate::lifecycle::{
-    self, crowdb_kv_server_bin, ChunkdbDeployRequest, DeployRequest, DiskdbDeployRequest,
+    self, crowdb_kv_server_bin, ChunkdbDeployRequest, DeployRequest, DiskdbDeployRequest, DiskioDeployRequest,
 };
 use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
@@ -627,6 +627,7 @@ pub struct LocalCombinedDeploySummary {
     pub racks: usize,
     pub diskdb_instances: usize,
     pub chunkdb_instances: usize,
+    pub diskio_instances: usize,
 }
 
 /// Deploy the canonical full-stack `ChunkDB` benchmark topology.
@@ -646,13 +647,106 @@ pub async fn local_deploy_combined(
         crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
+    let diskio = local_deploy_diskio(ctx, workspace, chunk.metrics_interval).await?;
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
         racks: 3,
         diskdb_instances: diskdb.instance_count,
         chunkdb_instances: chunkdb.instance_count,
+        diskio_instances: diskio,
     })
+}
+
+async fn local_deploy_diskio(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    metrics_interval: Option<u64>,
+) -> Result<usize> {
+    let mut nodes = ctx.config().nodes.clone();
+    nodes.sort_by_key(|node| node.id);
+    let seeds = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    let leader_seed = wait_for_leader(&seeds, 0, 0, std::time::Duration::from_secs(10))
+        .await
+        .ok_or_else(|| Error::UpstreamRpc {
+            node_id: "group0".into(),
+            status: "leader unavailable before DiskIO deployment".into(),
+        })?;
+    let count = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
+    let ports =
+        port_alloc::alloc_port_range(ServicePort::DiskioRpc, 0, count, &PortAllocConfig::new(workspace))
+            .map_err(|error| Error::Validation {
+                field: "port_alloc".into(),
+                message: error.to_string(),
+            })?;
+
+    for (index, node) in nodes.iter().enumerate() {
+        let server_id = format!("diskio-{}", node.id);
+        let node_dir = workspace
+            .join(format!("rack{}", node.rack_id))
+            .join(format!("node{}", node.id))
+            .join(&server_id);
+        let deployed = lifecycle::deploy_diskio_local(
+            &DiskioDeployRequest {
+                server_id: server_id.clone(),
+                instance_id: 30_000 + node.id,
+                rpc_port: ports[index],
+                rack_id: node.rack_id,
+                node_id: node.id,
+                disk_group_id: node.id * 100 + 1,
+                kv_server_mgmt_seeds: vec![leader_seed.clone()],
+                metrics_interval,
+            },
+            node,
+            &node_dir,
+        )
+        .await?;
+        ctx.config_mut().add_server(ServerEntry {
+            id: server_id,
+            url: deployed.endpoint.clone(),
+            node_id: Some(node.id),
+            rpc_url: Some(deployed.endpoint),
+            rest_port: None,
+            rpc_port: Some(ports[index]),
+            auto_start: true,
+            binary: None,
+            election_profile: None,
+            pid: Some(deployed.pid),
+            service_type: ServiceType::Diskio,
+            rpc_workers: None,
+            no_fsync: false,
+        })?;
+    }
+    wait_for_diskio_registration(ctx, nodes.len()).await?;
+    Ok(nodes.len())
+}
+
+async fn wait_for_diskio_registration(ctx: &OpContext, expected: usize) -> Result<()> {
+    let discovery = ctx.discovery_or_error()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        discovery.invalidate(Some("diskio"));
+        if discovery
+            .discover_all("diskio")
+            .await
+            .is_ok_and(|instances| instances.len() >= expected)
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "group0-service-registry".into(),
+                status: format!("expected {expected} living DiskIO instances before timeout"),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 async fn assign_benchmark_racks(ctx: &OpContext) -> Result<()> {

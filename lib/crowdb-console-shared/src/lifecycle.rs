@@ -112,6 +112,19 @@ pub struct ChunkdbDeployRequest {
     pub metrics_interval: Option<u64>,
 }
 
+/// Inputs for one local `NullDisk` DiskIO service.
+#[derive(Debug, Clone)]
+pub struct DiskioDeployRequest {
+    pub server_id: String,
+    pub instance_id: u64,
+    pub rpc_port: u16,
+    pub rack_id: u64,
+    pub node_id: u64,
+    pub disk_group_id: u64,
+    pub kv_server_mgmt_seeds: Vec<String>,
+    pub metrics_interval: Option<u64>,
+}
+
 /// Spawn `crowdb-kv-server` locally. The `node.host` is folded into the
 /// returned URLs so the rest of the console can address the instance
 /// uniformly with the SSH path coming in C4.
@@ -712,6 +725,29 @@ pub fn crowdb_chunkdb_bin() -> Option<PathBuf> {
     find_in_path(std::ffi::OsStr::new("crowdb-chunkdb"))
 }
 
+/// Resolve the C++ `crowdb-diskio` binary.
+#[must_use]
+pub fn crowdb_diskio_bin() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CROWDB_DISKIO_BIN") {
+        return Some(PathBuf::from(path));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            let mut path = directory.to_path_buf();
+            for _ in 0..6 {
+                let candidate = path.join("app/crowdb-diskio/build/crowdb-diskio");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                if !path.pop() {
+                    break;
+                }
+            }
+        }
+    }
+    find_in_path(std::ffi::OsStr::new("crowdb-diskio"))
+}
+
 /// Locate the standalone `crowdb-rpc-fb-server` C++ binary (built via
 /// `pixi run build-cpp`). Search order: `$CROWDB_RPC_FB_SERVER_BIN`,
 /// `lib/crowdb-rpc/build/crowdb-rpc-fb-server` relative to the repo
@@ -1076,4 +1112,118 @@ pub async fn deploy_chunkdb_local(
         endpoint,
         pid,
     })
+}
+
+/// Spawn one local DiskIO service with a `NullDisk` backend.
+///
+/// Readiness is completed by the caller through the group-0 service registry,
+/// which proves both KV synchronization and ownership publication.
+///
+/// # Errors
+/// Returns an error for invalid ports, missing binaries, or an early child exit.
+pub async fn deploy_diskio_local(
+    req: &DiskioDeployRequest,
+    node: &NodeEntry,
+    workspace_dir: &Path,
+) -> Result<DeployedDiskdb> {
+    if req.rpc_port == 0 {
+        return Err(Error::Validation {
+            field: "rpc_port".into(),
+            message: "DiskIO RPC port must be non-zero".into(),
+        });
+    }
+    let binary = crowdb_diskio_bin().ok_or_else(|| Error::NotFound {
+        kind: "binary".into(),
+        id: "crowdb-diskio (set CROWDB_DISKIO_BIN)".into(),
+    })?;
+    let launch_binary = stage_server_binary(&binary, workspace_dir)?;
+    let log_dir = workspace_dir.join("log");
+    std::fs::create_dir_all(&log_dir)?;
+    let output_path = log_dir.join("crowdb-diskio.stdout.log");
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+    let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
+    let mut command = Command::new(launch_binary);
+    command
+        .arg("--bind")
+        .arg(&node.host)
+        .arg("--port")
+        .arg(req.rpc_port.to_string())
+        .arg("--dummy-disk")
+        .arg("null")
+        .arg("--kv-seeds")
+        .arg(req.kv_server_mgmt_seeds.join(","))
+        .arg("--instance-id")
+        .arg(req.instance_id.to_string())
+        .arg("--rack-id")
+        .arg(req.rack_id.to_string())
+        .arg("--node-id")
+        .arg(req.node_id.to_string())
+        .arg("--dg-id")
+        .arg(req.disk_group_id.to_string())
+        .arg("--sync-interval-ms")
+        .arg("1000")
+        .arg("--auto-discover-disks")
+        .current_dir(workspace_dir)
+        .stdout(Stdio::from(output.try_clone()?))
+        .stderr(Stdio::from(output))
+        .kill_on_drop(false);
+    if let Some(interval) = req.metrics_interval {
+        command.arg("--metrics-interval").arg(interval.to_string());
+    }
+    if let Some(lib_dir) = diskio_ffi_lib_dir(workspace_dir) {
+        command.env("LD_LIBRARY_PATH", lib_dir);
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id().ok_or_else(|| Error::Validation {
+        field: "pid".into(),
+        message: "spawned DiskIO child has no pid".into(),
+    })?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    if let Some(status) = child.try_wait()? {
+        return Err(Error::UpstreamRpc {
+            node_id: req.server_id.clone(),
+            status: format!(
+                "DiskIO exited before registration with {status}; log={}",
+                output_path.display()
+            ),
+        });
+    }
+    std::mem::forget(child);
+    Ok(DeployedDiskdb {
+        server_id: req.server_id.clone(),
+        endpoint,
+        pid,
+    })
+}
+
+fn diskio_ffi_lib_dir(workspace_dir: &Path) -> Option<PathBuf> {
+    let mut roots = vec![workspace_dir.to_path_buf()];
+    if let Ok(current) = std::env::current_dir() {
+        roots.push(current);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    for mut root in roots {
+        for _ in 0..8 {
+            if root.join("libcrowdb_kv_client.so").exists() {
+                return Some(root);
+            }
+            for profile in ["debug", "release"] {
+                let candidate = root.join("target").join(profile);
+                if candidate.join("libcrowdb_kv_client.so").exists() {
+                    return Some(candidate);
+                }
+            }
+            if !root.pop() {
+                break;
+            }
+        }
+    }
+    None
 }
