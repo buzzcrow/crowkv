@@ -262,6 +262,17 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
         else if (arg == "--auto-discover-disks") {
             out.auto_discover_disks = true;
         }
+        else if (arg == "--metrics-interval" && i + 1 < argc) {
+            uint32_t v;
+            if (!parse_u32(argv[++i], v)) {
+                err = "invalid --metrics-interval value";
+                return false;
+            }
+            out.metrics_interval_secs = v;
+        }
+        else if (arg == "--log-dir" && i + 1 < argc) {
+            out.metrics_log_dir = argv[++i];
+        }
         else if (arg == "--help" || arg == "-h") {
             std::printf("usage: crowdb-diskio --port <port> [--bind <addr>] "
                         "[--dummy-disk null|mem] "
@@ -272,10 +283,12 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
                         "  (hex_id = high:low or just low, both hex) "
                         "[--kv-seeds <url1>,<url2>...] "
                         "[--instance-id N] [--rack-id N] [--dg-id N] "
-                        "[--sync-interval-ms N] [--auto-discover-disks]\n"
+                        "[--sync-interval-ms N] [--auto-discover-disks] "
+                        "[--metrics-interval N] [--log-dir <dir>]\n"
                         "  Engine is auto-detected: uring if available, blocking otherwise.\n"
                         "  Empty path in --disk creates a dummy disk (null or mem).\n"
-                        "  With --kv-seeds, diskio syncs with group-0 and heartbeats.\n");
+                        "  With --kv-seeds, diskio syncs with group-0 and heartbeats.\n"
+                        "  --metrics-interval 0 disables metrics logging (default: 5s).\n");
             std::exit(0);
         }
         else {

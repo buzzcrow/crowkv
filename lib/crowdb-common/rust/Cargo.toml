@@ -23,5 +23,8 @@ notify = "8.2"
 notify-debouncer-mini = "0.7"
 thiserror = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 crowdb-test-harness = { path = "../../crowdb-test-harness" }

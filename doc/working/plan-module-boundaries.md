@@ -3,7 +3,9 @@
 
 # DiskDB and ChunkDB Module Boundaries Plan
 
-The module-boundary implementation and design folding are complete. This file remains only because the final local CI sweep is blocked.
+The module-boundary implementation and design folding are complete. The active
+follow-up is to diagnose and fix the chunk-client write stall, then finish the
+local CI sweep.
 
 ## Completed
 
@@ -15,11 +17,26 @@ The module-boundary implementation and design folding are complete. This file re
 - [x] Pass workspace formatting and Clippy with warnings denied.
 - [x] Fold the module structure into the permanent DiskDB and ChunkDB designs.
 - [x] Remove the completed backlog item.
-- [~] Run every `test-*` Pixi task separately.
+- [x] Run every unaffected `test-*` Pixi task separately.
 
-## Blocked
+## Chunk-Client Write Follow-Up
 
-`test-chunk-client` does not complete because `e2e_case1_single_chunk_multi_strip` and `e2e_case2_chunk_rotation` stall after their full stacks become ready and `write_stream` starts.
+- [~] **Diagnose write stall**: trace `write_stream` from the first pending
+  operation through chunk allocation and DiskIO completion, identify the first
+  divergence, and fix the underlying error. Files:
+  `lib/crowdb-chunk-client/`, `lib/crowdb-diskio-client/`,
+  `lib/crowdb-common/cpp/`, and the relevant service path.
+- [ ] **Verify large-object writes**: pass
+  `e2e_case1_single_chunk_multi_strip` and `e2e_case2_chunk_rotation`. Files:
+  `lib/crowdb-chunk-client/tests/large_object_writer_e2e.rs`.
+- [ ] **Finish local CI**: pass `pixi run test-chunk-client`, then run every
+  remaining `test-*` Pixi task separately.
+
+## Starting Evidence
+
+`test-chunk-client` does not complete because
+`e2e_case1_single_chunk_multi_strip` and `e2e_case2_chunk_rotation` stall after
+their full stacks become ready and `write_stream` starts.
 
 Reproduce the isolated first case:
 
@@ -53,4 +70,6 @@ Logs show healthy topology refresh and one DiskIO warning immediately after writ
 DiskIOUring::submit_write: fd not registered, routing to pipeline 0
 ```
 
-No panic or service error is logged. Debugging the existing chunk-client/DiskIO write stall is outside the module-boundary requirement and needs separate authorization because it may require behavioral changes in the data path or its test harness.
+No panic or service error was logged in the recorded attempts. Start at the
+first pending `write_stream` operation and treat the DiskIO routing warning as
+evidence to verify, not as the assumed root cause.

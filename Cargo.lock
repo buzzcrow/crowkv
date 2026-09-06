@@ -687,6 +687,7 @@ version = "0.1.0"
 dependencies = [
  "crowdb-test-harness",
  "flate2",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "serde",

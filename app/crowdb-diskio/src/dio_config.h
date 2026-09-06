@@ -66,6 +66,11 @@ struct DioConfig
     uint32_t                 sync_interval_ms    = 5000; // keepalive period
     bool                     auto_discover_disks = false;
 
+    // Metrics logging. When metrics_interval_secs > 0, system metrics
+    // (CPU, RSS, TCP, DRAM BW) are flushed to a log file every interval.
+    std::string metrics_log_dir = "log"; // directory for metrics log files
+    uint32_t    metrics_interval_secs = 5; // 0 disables metrics logging
+
     // Parse CLI args. Returns true on success, false on error (msg in err).
     static bool parse_args(int argc, char *argv[], DioConfig &out, std::string &err);
 

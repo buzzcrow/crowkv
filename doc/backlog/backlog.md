@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R135** — Bump this line in the same commit when adding a new item.
+**Next R number: R136** — Bump this line in the same commit when adding a new item.
 
 ### High Priority
 
@@ -92,6 +92,18 @@ Dependency order: R93 → R106, R107 → R110, R111, R112
 list + degraded-strip tracking). The RPC migration items (R115,
 R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
+
+- **[R135](R135-chunkio-end-to-end-performance.md)** — Chunk IO write-flow
+  review and end-to-end performance — Area: chunkio / chunkdb / diskdb /
+  diskio / kv — Extend the three-node combined fixture to deploy three
+  DiskIO instances backed by `NullDisk`, add disk-ID-to-DiskIO routing to
+  the chunk client, and benchmark large-object writes through a library-owned
+  prepare-and-stream API. Keep allocation off the steady-state data path;
+  measure fetch, EC, block writes, fsync, and chunk seal. Review and reduce
+  memory copies, passively collect host DRAM bandwidth when hardware counters
+  support it, and record logical/physical bandwidth, loopback traffic, object
+  latency, errors, exact accounting, and service logs. Keep shared fixture and
+  result plumbing reusable for later small-write and read workloads.
 
 - **[R93](R93-chunkdb-mirror-to-ec-conversion.md)** — Mirror-to-EC
   conversion — Area: chunkdb — Background conversion of mirror strips

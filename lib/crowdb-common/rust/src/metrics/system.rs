@@ -1,12 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
-// Licensed under the Apache License, Version 2.0.
 
-//! OS-level system metrics: CPU time, memory RSS, and TCP retransmits.
+//! OS-level system metrics: CPU time, memory RSS, TCP retransmits, and
+//! DRAM bandwidth.
 //!
-//! On Linux, reads `/proc/self/stat` for CPU jiffies and `/proc/self/status`
-//! for RSS, and `/proc/net/snmp` for TCP retransmit/lost counters.
-//! On macOS (and other non-Linux platforms), CPU and RSS are read via
-//! `ps` command output; TCP stats are stubbed (reported as 0).
+//! On Linux, reads `/proc/self/stat` for CPU jiffies, `/proc/self/status`
+//! for RSS, `/proc/net/snmp` for TCP retransmit/lost counters, and
+//! `perf_event_open` for DRAM read+write bandwidth (AMD `amd_df` or Intel
+//! `uncore_imc` uncore PMU). On macOS (and other non-Linux platforms),
+//! CPU and RSS are read via `ps` command output; TCP and DRAM BW are
+//! stubbed (reported as 0 / unsupported).
 
 use std::io::Write;
 use std::time::Instant;
@@ -16,8 +18,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use std::fs;
 
+#[cfg(target_os = "linux")]
+use super::perf::DramBwCounter;
+
 /// Snapshot of system-level metrics at a single point in time.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SystemMetrics {
     /// User CPU utilization (percent) since the previous snapshot.
     pub cpu_user_pct: u64,
@@ -29,11 +34,16 @@ pub struct SystemMetrics {
     pub tcp_retransmits: u64,
     /// TCP lost segment count delta since previous snapshot (Linux only).
     pub tcp_lost: u64,
+    /// Average DRAM read+write bandwidth in MiB/s since the previous
+    /// snapshot. `None` when the PMU is unavailable (non-Linux, missing
+    /// kernel module, or insufficient permissions).
+    pub dram_bw_mib: Option<f64>,
 }
 
 /// Collects OS-level metrics by reading `/proc` (Linux) or using
 /// `ps` (macOS). Maintains previous-state to compute deltas for
-/// CPU time and TCP counters.
+/// CPU time and TCP counters. On Linux, also owns a `DramBwCounter`
+/// that reads the uncore PMU via `perf_event_open`.
 #[allow(clippy::struct_field_names)]
 pub struct SystemCollector {
     prev_cpu_user_us: u64,
@@ -41,11 +51,15 @@ pub struct SystemCollector {
     prev_tcp_retransmits: u64,
     prev_tcp_lost: u64,
     prev_instant: Instant,
+    #[cfg(target_os = "linux")]
+    dram_bw: Option<DramBwCounter>,
 }
 
 impl SystemCollector {
     /// Create a new collector. The first `collect()` call will report
-    /// deltas from this baseline.
+    /// deltas from this baseline. On Linux, attempts to open a DRAM
+    /// bandwidth PMU counter; if unavailable, `dram_bw_mib` will be
+    /// `None` in all snapshots.
     #[must_use]
     pub fn new() -> Self {
         let (user_us, sys_us) = read_cpu_times();
@@ -56,6 +70,8 @@ impl SystemCollector {
             prev_tcp_retransmits: retransmits,
             prev_tcp_lost: lost,
             prev_instant: Instant::now(),
+            #[cfg(target_os = "linux")]
+            dram_bw: DramBwCounter::new(),
         }
     }
 
@@ -91,12 +107,22 @@ impl SystemCollector {
             .and_then(|v| v.checked_div(elapsed_us))
             .unwrap_or(0);
 
+        #[cfg(target_os = "linux")]
+        let dram_bw_mib = self
+            .dram_bw
+            .as_mut()
+            .and_then(DramBwCounter::read_bytes_per_sec)
+            .map(|bps| bps / 1024.0 / 1024.0);
+        #[cfg(not(target_os = "linux"))]
+        let dram_bw_mib = None;
+
         SystemMetrics {
             cpu_user_pct,
             cpu_sys_pct,
             rss_kb,
             tcp_retransmits,
             tcp_lost,
+            dram_bw_mib,
         }
     }
 }
@@ -109,13 +135,17 @@ impl Default for SystemCollector {
 
 /// Write a system snapshot to the flush writer in the "misc" section format.
 pub fn flush_system<W: Write>(writer: &mut W, snap: &SystemMetrics) {
-    let _ = writeln!(writer, "sys.cpu.util.user  {}%", snap.cpu_user_pct);
-    let _ = writeln!(writer, "sys.cpu.util.sys   {}%", snap.cpu_sys_pct);
     #[allow(clippy::cast_precision_loss)]
     let rss_gb = snap.rss_kb as f64 / 1024.0 / 1024.0;
-    let _ = writeln!(writer, "sys.rss_gb         {rss_gb:.2}");
-    let _ = writeln!(writer, "sys.tcp_retrans    {}", snap.tcp_retransmits);
-    let _ = writeln!(writer, "sys.tcp_lost       {}", snap.tcp_lost);
+    let bw = match snap.dram_bw_mib {
+        Some(b) => format!("{b:.1}"),
+        None => "unsupported".to_string(),
+    };
+    let _ = writeln!(
+        writer,
+        "sys  cpu.user={}% cpu.sys={}% rss_gb={rss_gb:.2} tcp_retrans={} tcp_lost={} bw_mib={bw}",
+        snap.cpu_user_pct, snap.cpu_sys_pct, snap.tcp_retransmits, snap.tcp_lost,
+    );
 }
 
 // ── Platform-specific readers ───────────────────────────────────
@@ -253,19 +283,32 @@ mod tests {
             rss_kb: 4096,
             tcp_retransmits: 3,
             tcp_lost: 1,
+            dram_bw_mib: Some(512.5),
         };
         let mut buf = Vec::new();
         flush_system(&mut buf, &snap);
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("sys.cpu.util.user"));
-        assert!(out.contains("42%"));
-        assert!(out.contains("sys.cpu.util.sys"));
-        assert!(out.contains("17%"));
-        assert!(out.contains("sys.rss_gb"));
-        assert!(out.contains("0.00"));
-        assert!(out.contains("sys.tcp_retrans"));
-        assert!(out.contains('3'));
-        assert!(out.contains("sys.tcp_lost"));
-        assert!(out.contains('1'));
+        assert!(out.contains("cpu.user=42%"));
+        assert!(out.contains("cpu.sys=17%"));
+        assert!(out.contains("rss_gb=0.00"));
+        assert!(out.contains("tcp_retrans=3"));
+        assert!(out.contains("tcp_lost=1"));
+        assert!(out.contains("bw_mib=512.5"));
+    }
+
+    #[test]
+    fn flush_system_writes_unsupported_when_none() {
+        let snap = SystemMetrics {
+            cpu_user_pct: 0,
+            cpu_sys_pct: 0,
+            rss_kb: 0,
+            tcp_retransmits: 0,
+            tcp_lost: 0,
+            dram_bw_mib: None,
+        };
+        let mut buf = Vec::new();
+        flush_system(&mut buf, &snap);
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("bw_mib=unsupported"));
     }
 }

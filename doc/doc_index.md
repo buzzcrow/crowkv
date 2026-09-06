@@ -40,6 +40,12 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/kv/`.
 | `doc/design/kv/kv-write-flow-analysis.md` | KV write path trace and optimization opportunities. |
 | `doc/design/rpc/rpc-flow-analysis.md` | RPC transport flow trace, benchmarks, and performance history. |
 
+## Dev Environment (`doc/dev/`)
+
+| Doc | When to read |
+| --- | --- |
+| `doc/dev/env_setup.md` | One-time host setup for perf counters and benchmarks on Ubuntu 24 (AMD `amd_df` + Intel `uncore_imc`). Read before running benchmarks or DRAM-bandwidth measurement. |
+
 ## Project Files (repo root)
 
 | File | When to read |

@@ -24,10 +24,10 @@
 #include "crowdb-tree/slice.h"
 
 #include <atomic>
-#include <thread>
 #include <cstdint>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace crowdb::tree

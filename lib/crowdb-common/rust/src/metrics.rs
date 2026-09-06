@@ -12,6 +12,9 @@ pub mod precise;
 pub mod summary;
 pub mod system;
 
+#[cfg(target_os = "linux")]
+pub mod perf;
+
 mod flush;
 pub mod name;
 pub mod point;

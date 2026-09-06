@@ -18,6 +18,7 @@
 #include "crowdb-rpc/scheduled_executor.h"
 #include "crowdb-rpc/server/server.h"
 #include "crowdb-rpc/transport/socket_transport.h"
+#include "crowdb-common/metrics/system_metrics.h"
 #include "dio_config.h"
 #include "disk/block_disk.h"
 #include "disk/disk_set.h"
@@ -28,8 +29,11 @@
 #include "rpc/dio_server.h"
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <ctime>
+#include <filesystem>
 #include <thread>
 
 #ifdef CROWDB_HAVE_LIBURING
@@ -41,6 +45,67 @@ static std::atomic<bool> g_running{true};
 static void on_signal(int)
 {
     g_running.store(false);
+}
+
+// ── Metrics logging ─────────────────────────────────────────────
+
+// Format a timestamp as ISO 8601 (matching the Rust metrics runner).
+static std::string iso8601_now()
+{
+    auto now = std::chrono::system_clock::now();
+    auto tt  = std::chrono::system_clock::to_time_t(now);
+    struct tm tm_buf;
+    gmtime_r(&tt, &tm_buf);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
+    return buf;
+}
+
+// Open a metrics log file under <log_dir>/crowdb-diskio-metrics-<pid>.log.
+// Returns nullptr on failure (metrics logging is silently disabled).
+static FILE *open_metrics_log(const std::string &log_dir)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(log_dir, ec);
+    std::string path = log_dir + "/crowdb-diskio-metrics-" + std::to_string(::getpid()) + ".log";
+    FILE *fp = std::fopen(path.c_str(), "a");
+    if (fp != nullptr) {
+        std::setvbuf(fp, nullptr, _IOLBF, 0); // line-buffered
+        std::printf("metrics log: %s\n", path.c_str());
+    }
+    return fp;
+}
+
+// Periodic system metrics flush. Reschedules itself on the executor
+// every interval_secs to emulate a periodic timer.
+static void schedule_metrics_flush(
+    crowdb::rpc::ScheduledExecutor &scheduler,
+    crowdb::common::metrics::SystemCollector &collector,
+    FILE *metrics_fp,
+    uint32_t interval_secs)
+{
+    auto *sched_ptr  = &scheduler;
+    auto *coll_ptr   = &collector;
+    auto *fp_ptr     = metrics_fp;
+    auto  interval   = interval_secs;
+
+    scheduler.schedule(
+        [sched_ptr, coll_ptr, fp_ptr, interval]() {
+            if (fp_ptr == nullptr)
+                return;
+
+            auto snap = coll_ptr->collect();
+            auto ts   = iso8601_now();
+            std::fprintf(fp_ptr, "[%s window=%.3fs]\n", ts.c_str(),
+                         static_cast<double>(interval));
+            std::fprintf(fp_ptr, "misc\n");
+            crowdb::common::metrics::flush_system(fp_ptr, snap);
+            std::fflush(fp_ptr);
+
+            // Reschedule for the next tick.
+            schedule_metrics_flush(*sched_ptr, *coll_ptr, fp_ptr, interval);
+        },
+        interval_secs * 1000);
 }
 
 // Auto-detect the IoEngine: try UringEngine first (Linux with liburing),
@@ -178,10 +243,35 @@ int main(int argc, char *argv[])
                     static_cast<unsigned long long>(cfg.dg_id));
     }
 
+    // Start system metrics logging (CPU, RSS, TCP, DRAM BW).
+    std::unique_ptr<crowdb::common::metrics::SystemCollector> sys_collector;
+    FILE *metrics_fp = nullptr;
+    if (cfg.metrics_interval_secs > 0) {
+        metrics_fp = open_metrics_log(cfg.metrics_log_dir);
+        if (metrics_fp != nullptr) {
+            sys_collector = std::make_unique<crowdb::common::metrics::SystemCollector>();
+            // Prime the collector with a baseline read.
+            (void)sys_collector->collect();
+            schedule_metrics_flush(scheduler, *sys_collector, metrics_fp, cfg.metrics_interval_secs);
+            std::printf("system metrics started (interval=%us)\n", cfg.metrics_interval_secs);
+        }
+    }
+
     // Run until signaled. Poll the scheduler every 100ms.
     while (g_running.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         scheduler.run_due_tasks();
+    }
+
+    // Final metrics flush.
+    if (metrics_fp != nullptr && sys_collector != nullptr) {
+        auto snap = sys_collector->collect();
+        auto ts   = iso8601_now();
+        std::fprintf(metrics_fp, "[%s window=final]\n", ts.c_str());
+        std::fprintf(metrics_fp, "misc\n");
+        crowdb::common::metrics::flush_system(metrics_fp, snap);
+        std::fflush(metrics_fp);
+        std::fclose(metrics_fp);
     }
 
     if (group0_sync != nullptr) {
