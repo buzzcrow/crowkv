@@ -27,7 +27,7 @@ struct Upstream {
 
 impl Drop for Upstream {
     fn drop(&mut self) {
-        let _ = stop_pid_with_timeout(self.pid, Duration::from_secs(5));
+        let _ = stop_pid_with_timeout(self.pid, Duration::from_secs(1));
     }
 }
 
@@ -154,7 +154,7 @@ async fn swagger_routes_are_removed() {
         "GET /api/nodes/1/openapi.json should not return OpenAPI JSON"
     );
 
-    let _ = lifecycle::stop_pid(upstream.pid);
+    let _ = stop_pid_with_timeout(upstream.pid, Duration::from_secs(1));
 }
 
 #[tokio::test]
@@ -193,7 +193,7 @@ async fn cluster_init_delegates_to_ops_cluster_init() {
         resp.status()
     );
 
-    let _ = lifecycle::stop_pid(upstream.pid);
+    let _ = stop_pid_with_timeout(upstream.pid, Duration::from_secs(1));
 }
 
 #[tokio::test]
@@ -240,7 +240,7 @@ async fn add_store_delegates_to_ops_kv_logical() {
         "store 42 should be listed"
     );
 
-    let _ = lifecycle::stop_pid(upstream.pid);
+    let _ = stop_pid_with_timeout(upstream.pid, Duration::from_secs(1));
 }
 
 #[tokio::test]
@@ -275,7 +275,7 @@ async fn delete_server_returns_409_when_replicas_exist() {
         resp.text().await.ok()
     );
 
-    let _ = lifecycle::stop_pid(upstream.pid);
+    let _ = stop_pid_with_timeout(upstream.pid, Duration::from_secs(1));
 }
 
 #[tokio::test]
@@ -336,5 +336,5 @@ async fn kv_get_delegates_to_ops_kv_data() {
     assert_eq!(body["found"], true);
     assert_eq!(body["value_utf8"], "world");
 
-    let _ = lifecycle::stop_pid(upstream.pid);
+    let _ = stop_pid_with_timeout(upstream.pid, Duration::from_secs(1));
 }

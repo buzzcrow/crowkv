@@ -37,7 +37,7 @@ struct ProcessGuard {
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
         for pid in self.pids.values() {
-            let _ = stop_pid_with_timeout(*pid, Duration::from_secs(5));
+            let _ = stop_pid_with_timeout(*pid, Duration::from_secs(1));
         }
     }
 }
