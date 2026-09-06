@@ -39,3 +39,25 @@ fn combined_deploy_exposes_chunkdb_controls() {
     assert!(stdout.contains("--chunkdb-instances"));
     assert!(stdout.contains("--allow-unsafe-ec"));
 }
+
+#[test]
+fn chunkio_write_exposes_large_write_controls() {
+    let output = Command::new(crowdb_cli_bin())
+        .args(["bench", "chunkio", "write", "--help"])
+        .output()
+        .expect("run crowdb-cli chunk IO benchmark help");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+    for option in [
+        "--objects",
+        "--object-size",
+        "--concurrency",
+        "--block-size",
+        "--chunk-size",
+        "--data-num",
+        "--code-num",
+        "--seed",
+    ] {
+        assert!(stdout.contains(option), "missing {option}");
+    }
+}

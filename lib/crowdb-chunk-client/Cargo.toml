@@ -27,6 +27,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
 arc-swap = "1.9"
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 # Self dev-dependency: auto-enables the `test-util` feature for this

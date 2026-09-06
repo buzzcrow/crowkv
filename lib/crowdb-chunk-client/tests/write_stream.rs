@@ -24,8 +24,9 @@ use crowdb_test_harness::test_dirs;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{
-    ChunkAllocator, ChunkClientConfig, ChunkIoWriter, IoError, LargeAsyncObjectWriter, LargeObjectWriter,
-    Result, WriterPool,
+    run_large_write_benchmark, ChunkAllocator, ChunkClientConfig, ChunkIoClient, ChunkIoWriter, IoError,
+    LargeAsyncObjectWriter, LargeObjectWriter, LargeWriteBenchmarkConfig, LargeWritePolicy, Result,
+    WriterPool,
 };
 use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::DiskId;
@@ -932,4 +933,34 @@ async fn writer_pool_per_writer_memory() {
     let writer = make_push_writer(chunkdb, diskio, ec, config);
     let mem = writer.per_writer_memory();
     assert_eq!(mem, 15 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn benchmark_runner_aggregates_concurrent_large_writes() {
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let client = ChunkIoClient::from_parts(Arc::new(chunkdb), Arc::new(diskio));
+    let result = run_large_write_benchmark(
+        client,
+        LargeWriteBenchmarkConfig {
+            object_count: 2,
+            object_size: 4 * UNIT_BYTES,
+            concurrency: 2,
+            seed: 7,
+            policy: LargeWritePolicy {
+                ec_scheme: ec_4_1(),
+                client: test_config(1024 * 1024),
+            },
+        },
+    )
+    .await;
+
+    assert_eq!(result.objects, 2);
+    assert_eq!(result.errors, 0);
+    assert_eq!(result.logical_bytes, 8 * UNIT_BYTES);
+    assert_eq!(result.physical_bytes, 10 * UNIT_BYTES);
+    assert!(result.objects_per_sec > 0.0);
+    assert!(result.latency_p50_us > 0);
+    assert!(result.error_messages.is_empty());
 }

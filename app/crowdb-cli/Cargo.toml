@@ -22,6 +22,7 @@ crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
+crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 flatbuffers = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

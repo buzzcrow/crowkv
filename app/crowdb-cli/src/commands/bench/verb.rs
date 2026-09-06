@@ -24,6 +24,37 @@ pub enum BenchVerb {
     /// Distributed chunk lifecycle benchmark.
     #[command(subcommand)]
     Chunkdb(ChunkdbBenchVerb),
+    /// End-to-end chunk data IO benchmark.
+    #[command(subcommand)]
+    Chunkio(ChunkioBenchVerb),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChunkioBenchVerb {
+    /// Stream deterministic large objects through ChunkDB and DiskIO.
+    Write(ChunkioArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ChunkioArgs {
+    #[arg(long, default_value_t = 1)]
+    pub objects: u64,
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    pub object_size: u64,
+    #[arg(long, default_value_t = 1)]
+    pub concurrency: usize,
+    #[arg(long, default_value_t = 1024 * 1024)]
+    pub block_size: usize,
+    #[arg(long, default_value_t = 1024 * 1024 * 1024)]
+    pub chunk_size: u64,
+    #[arg(long, default_value_t = 4)]
+    pub data_num: usize,
+    #[arg(long, default_value_t = 1)]
+    pub code_num: usize,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u8,
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -329,6 +360,7 @@ pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {
         BenchVerb::Rpc(args) => super::rpc::run(cli, args).await,
         BenchVerb::Diskdb(verb) => super::diskdb::run(cli, verb).await,
         BenchVerb::Chunkdb(verb) => super::chunkdb::run(cli, verb).await,
+        BenchVerb::Chunkio(verb) => super::chunkio::run(cli, verb).await,
         BenchVerb::Kv(kv) => match kv {
             KvBenchVerb::Prepare(args) => super::kv_prepare::run(cli, args).await,
             KvBenchVerb::Read(args) => super::kv_read::run(cli, args).await,

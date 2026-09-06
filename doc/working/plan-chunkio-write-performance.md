@@ -29,10 +29,10 @@ refine it through a three-node `NullDisk` benchmark.
 - [x] **Add DiskIO routing**: publish immutable disk-owner snapshots and bounded
   endpoint pools. Files: `lib/crowdb-chunk-client/src/disk_io/`,
   `lib/crowdb-kv-client/src/`.
-- [ ] **Deploy three DiskIO services**: extend combined local deployment,
+- [x] **Deploy three DiskIO services**: extend combined local deployment,
   readiness, persistence, destroy, and logs. Files:
   `lib/crowdb-console-shared/src/`, `app/crowdb-cli/src/commands/cluster.rs`.
-- [ ] **Pass distributed E2E**: write an EC strip across three disk groups and
+- [x] **Pass distributed E2E**: write an EC strip across three disk groups and
   verify routing and accounting. Files: `lib/crowdb-chunk-client/tests/`.
 
 ## Performance
@@ -43,11 +43,11 @@ refine it through a three-node `NullDisk` benchmark.
 - [ ] **Refine critical path**: measure and apply bounded write/EC/finalization
   overlap while preserving memory and ordering. Files:
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-chunk-client/tests/`.
-- [ ] **Add library benchmark runner**: implement bounded deterministic large
+- [x] **Add library benchmark runner**: implement bounded deterministic large
   writes and aggregate results. Files: `lib/crowdb-chunk-client/src/benchmark.rs`.
-- [ ] **Add thin CLI verb**: map arguments and format the library result. Files:
+- [x] **Add thin CLI verb**: map arguments and format the library result. Files:
   `app/crowdb-cli/src/commands/bench/`, `app/crowdb-cli/Cargo.toml`.
-- [ ] **Add regression sentinel**: run and retain the three-node matrix and
+- [x] **Add regression sentinel**: run and retain the three-node matrix and
   `bw_mib` samples. Files: `tools/bench-chunkio-write-regression.sh`.
 
 ## Documentation and Gates

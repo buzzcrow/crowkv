@@ -20,6 +20,7 @@
     clippy::doc_markdown
 )]
 
+pub mod benchmark;
 pub mod chunk;
 pub mod client;
 pub mod config;
@@ -30,6 +31,7 @@ pub mod traits;
 pub mod worker;
 pub mod writer;
 
+pub use benchmark::{run_large_write_benchmark, LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult};
 pub use chunk::{ChunkPrefetch, ChunkWriter, EcStripWriter, MirrorStripWriter, StripResult, StripWriter};
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
