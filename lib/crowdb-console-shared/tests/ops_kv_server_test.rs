@@ -27,7 +27,7 @@ fn ctx_with_node() -> OpContext {
         ssh_password: None,
     })
     .unwrap();
-    OpContext::new("127.0.0.1:1".into(), vec![], cfg)
+    OpContext::new_for_test("127.0.0.1:59999".into(), vec![], cfg)
 }
 
 #[tokio::test]

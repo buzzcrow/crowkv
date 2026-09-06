@@ -287,6 +287,9 @@ needed for the lean surface.
 - The Playwright real-backend E2E suite (`app/crowdb-web/ui/e2e/`)
   targets this lean SPA; selectors track the rewritten DOM. The full
   chain rack→node→deploy→store→group→replica→KV is the acceptance bar.
+- The web server's test mode keeps spawned DiskDB heartbeat and group-0
+  sync intervals at one second. Normal deployments retain DiskDB's
+  production defaults.
 
 ---
 

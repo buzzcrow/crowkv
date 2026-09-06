@@ -46,6 +46,8 @@ pub struct AppState {
     /// console with identical "instance query failed" warnings every
     /// poll cycle when a diskdb instance is unreachable.
     pub warn_dedup: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
+    /// Enables faster spawned-process intervals for E2E runs.
+    pub test_mode: bool,
 }
 
 impl Default for AppState {
@@ -97,7 +99,15 @@ impl AppState {
             kv_client: Arc::new(tokio::sync::RwLock::new(None)),
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            test_mode: false,
         }
+    }
+
+    /// Enable or disable E2E test-mode behavior.
+    #[must_use]
+    pub fn with_test_mode(mut self, test_mode: bool) -> Self {
+        self.test_mode = test_mode;
+        self
     }
 
     /// Persist the current config to `config_path`, if one was provided.

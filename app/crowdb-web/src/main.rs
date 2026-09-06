@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None => crowdb_console_shared::ConsoleConfig::default(),
     };
     let server_count = cfg.servers.len();
-    let state = crowdb_web::AppState::with_config(cfg, path);
+    let state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
     tracing::info!(servers = server_count, "loaded registry");
     crowdb_web::mgmt::startup_topology_check(&state).await;
 

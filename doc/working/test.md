@@ -174,52 +174,59 @@ Playwright: 54 tests, 4.7 min (284.5 s).
 
 | Duration | Spec:line | Test |
 | -------- | --------- | ---- |
-| 54.8 s   | `10-cluster-rack-node:244` | confirm-gates store, node, and rack deletion |
-| 24.6 s   | `11-cluster-server-lifecycle:231` | deleting a node cascades service shutdown |
-| 11.9 s   | `90-flow-full-chain:20` | rack → node → server → store → group → replica → kv |
-| 10.8 s   | `50-chunk-capacity-disk-group:428` | assign disk-group to diskdb via UI (owner + bind) |
 | 7.7 s    | `31-kv-ops-advanced:98` | prefix/selected/inline delete + copy, load more, all-groups |
 | 7.7 s    | `13-todo-ui-behavior:28` | creates three fully-enabled nodes with disjoint DiskDB listeners |
 | 6.5 s    | `51-chunk-capacity-disk:100` | disk maintenance operations, set-status, and health badges |
 | 5.1 s    | `50-chunk-capacity-disk-group:565` | full deploy flow: deploy diskdb via UI, restart, stop, delete |
 | 4.1 s    | `53-chunk-capacity-canvas:212` | datacenter root in Capacity sidebar; inspector shows cluster totals |
+| 4.0 s    | `90-flow-full-chain:18` | rack → node → server → store → group → replica → kv |
 | 3.8 s    | `22-kv-topology:354` | two groups on overlapping 3-node subsets operate independently |
+| 3.7 s    | `10-cluster-rack-node:244` | confirm-gates store, node, and rack deletion |
+| 2.8 s    | `50-chunk-capacity-disk-group:428` | assign disk-group to diskdb via UI (owner + bind) |
+| 2.0 s    | `11-cluster-server-lifecycle:231` | deleting a node cascades service shutdown |
 
-### Slow steps (>= 5 s, from `stepTimer` instrumentation)
+### Notable slow steps (>= 3 s, from `stepTimer` instrumentation)
 
 | Duration  | Spec | Step label |
 | --------- | ---- | ---------- |
-| 51.9 s    | `10-cluster-rack-node` | `del-gate: delete rack UI` |
-| 21.2 s    | `11-cluster-server-lifecycle` | `cascade: delete svc UI` |
-| 8.6 s     | `50-chunk-capacity-disk-group` | `capacity-assign: wait for usage` |
-| 3.6 s     | `90-flow-full-chain` | `full-chain: add store 188 UI` |
 | 3.6 s     | `50-chunk-capacity-disk-group` | `disk-group: DG + disk CRUD UI` |
 
-### Remaining runtime investigations
+### Runtime improvements completed
 
-- **`10-cluster-rack-node:244` (54.8 s)** — the `del-gate: delete rack UI`
-  step takes 51.9 s. After the rack is deleted from config, the UI refresh
-  polls `pingNode` for all nodes (including the still-running KV server on
-  node 25). The `pingNode` call is a local SSH-probe shortcut (instant for
-  test nodes), but the tree rebuild waits for all parallel `listNodeStores`
-  and `listNodeDiskGroups` calls. The store deletion via `http_remove_store`
-  also pays a sysdata RPC round-trip to the live group-0 leader. Further
-  reduction would require parallelizing the tree rebuild or skipping
-  per-node detail fetches for nodes not in the current subtree.
-- **`11-cluster-server-lifecycle:231` (24.6 s)** — `cascade: delete svc UI`
-  takes 21.2 s. The cascade stops the server, removes it from config,
-  refreshes the group-0 leader, and then performs best-effort sysdata
-  cleanup. The 21-second cost is dominated by the sysdata retry budget
-  when the just-stopped server was the group-0 leader and the remaining
-  nodes need to re-elect. This is inherent to the real-backend lifecycle.
-- **`90-flow-full-chain:20` (11.9 s)** — `full-chain: add store 188 UI`
-  spends 3.6 s in the real two-node store POST and about 0.5 s refreshing
-  the UI. Replacing it with API seeding would remove the full-chain
-  coverage this spec is intended to provide.
-- **`50-chunk-capacity-disk-group:428` (10.8 s)** — `assign disk-group to
-  diskdb via UI` spends about 8.6 s waiting for DiskDB's configured
-  10-second keepalive to load the new disk group and report capacity.
-  Shortening this further requires an explicit test-mode sync interval.
+- **`10-cluster-rack-node:244`: 54.8 s → 3.7 s.** Server shutdown is
+  reaped in the background and deletion skips dead group-0 retry paths.
+- **`11-cluster-server-lifecycle:231`: 24.6 s → 2.0 s.** The same
+  non-blocking shutdown and bounded leader refresh remove the lifecycle
+  retry stall.
+- **`90-flow-full-chain:18`: 11.9 s → 4.0 s.** The spec now runs one
+  complete single-node chain; dedicated reconfiguration specs retain the
+  multi-node Add Replica coverage.
+- **`50-chunk-capacity-disk-group:428`: 10.8 s → 2.8 s.** Test-mode
+  DiskDB deployments use one-second heartbeat and group-0 sync intervals;
+  production defaults remain unchanged.
+
+### UI E2E optimization and diagnosis lessons
+
+- Remeasure the exact test before editing. The 54.8 s and 24.6 s records were
+  stale after lifecycle changes already in the worktree; current baselines
+  were 3.7 s and 2.2 s before further work.
+- Use `stepTimer` around the mutation response, service-state poll, DOM
+  refresh, and teardown. Command wall time includes the frontend build and web
+  server startup and is not the per-test regression signal.
+- Compare the exact test, complete spec, and original ordered selection. An
+  exact pass followed by a parallel suite failure points to isolation; the
+  deployer failure was confirmed as shared topology/port interference by a
+  passing serial run.
+- Preserve behavior while removing duplicate setup. The full-chain test keeps
+  one complete UI-created path; dedicated KV specs retain multi-node Add
+  Replica coverage.
+- Keep timing controls at the process boundary. DiskDB's ten-second cadence
+  became one second only under web-server test mode, while production defaults
+  stayed unchanged.
+- Poll lifecycle APIs and assert the resulting DOM instead of sleeping. Reuse
+  one API request context within a poll phase.
+- Treat strict-locator failures as missing scope: target `main`, the named
+  sidebar, or a named dialog instead of choosing a page-level first match.
 
 ### Non-UI slow tests (2026-09-05)
 

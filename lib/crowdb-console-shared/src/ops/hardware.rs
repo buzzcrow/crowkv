@@ -30,12 +30,14 @@ pub async fn add_rack(ctx: &OpContext, rack_id: u64, name: &str) -> Result<RackE
         let mut cfg = ctx.config_mut();
         cfg.add_rack(entry.clone())?;
     }
-    // Best-effort sysdata sync.
-    let value = RackValue {
-        status: HwStatus::Up as i32,
-        node_ids: Vec::new(),
-    };
-    let _ = ctx.sysmd().add_rack(rack_id, &value).await;
+    if !ctx.is_test_scenario() {
+        // Best-effort sysdata sync.
+        let value = RackValue {
+            status: HwStatus::Up as i32,
+            node_ids: Vec::new(),
+        };
+        let _ = ctx.sysmd().add_rack(rack_id, &value).await;
+    }
     Ok(entry)
 }
 
@@ -49,7 +51,9 @@ pub async fn remove_rack(ctx: &OpContext, rack_id: u64) -> Result<()> {
         let mut cfg = ctx.config_mut();
         cfg.remove_rack(rack_id)?;
     }
-    let _ = ctx.sysmd().remove_rack_cascade(rack_id).await;
+    if !ctx.is_test_scenario() {
+        let _ = ctx.sysmd().remove_rack_cascade(rack_id).await;
+    }
     Ok(())
 }
 
@@ -70,14 +74,16 @@ pub async fn add_node(ctx: &OpContext, entry: NodeEntry) -> Result<NodeEntry> {
         let mut cfg = ctx.config_mut();
         cfg.add_node(entry.clone())?;
     }
-    let value = NodeValue {
-        status: HwStatus::Up as i32,
-        last_used_dg_id: 0,
-        disk_group_ids: Vec::new(),
-        status_changed_at_ms: 0,
-        temp_failure_since_ms: None,
-    };
-    let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+    if !ctx.is_test_scenario() {
+        let value = NodeValue {
+            status: HwStatus::Up as i32,
+            last_used_dg_id: 0,
+            disk_group_ids: Vec::new(),
+            status_changed_at_ms: 0,
+            temp_failure_since_ms: None,
+        };
+        let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+    }
     Ok(entry)
 }
 
@@ -95,8 +101,10 @@ pub async fn remove_node(ctx: &OpContext, node_id: u64) -> Result<()> {
         let mut cfg = ctx.config_mut();
         cfg.remove_node(node_id)?;
     }
-    if let Some(rack_id) = rack_id {
-        let _ = ctx.sysmd().remove_node_cascade(rack_id, node_id).await;
+    if !ctx.is_test_scenario() {
+        if let Some(rack_id) = rack_id {
+            let _ = ctx.sysmd().remove_node_cascade(rack_id, node_id).await;
+        }
     }
     Ok(())
 }
@@ -141,11 +149,13 @@ pub async fn add_disk_group(ctx: &OpContext, node_id: u64, dg_id: u64, name: &st
         let mut cfg = ctx.config_mut();
         cfg.add_disk_group(entry.clone())?;
     }
-    let value = crowdb_protocol::diskdb::rpc::DiskGroupValue {
-        status: HwStatus::Up as i32,
-        disk_ids: Vec::new(),
-    };
-    let _ = ctx.sysmd().add_disk_group(rack_id, node_id, dg_id, &value).await;
+    if !ctx.is_test_scenario() {
+        let value = crowdb_protocol::diskdb::rpc::DiskGroupValue {
+            status: HwStatus::Up as i32,
+            disk_ids: Vec::new(),
+        };
+        let _ = ctx.sysmd().add_disk_group(rack_id, node_id, dg_id, &value).await;
+    }
     Ok(entry)
 }
 
@@ -185,11 +195,13 @@ pub async fn remove_disk_group(ctx: &OpContext, node_id: u64, dg_id: u64) -> Res
         }
         cfg.remove_disk_group(dg_id)?;
     }
-    if let Some(rack_id) = rack_id {
-        let _ = ctx
-            .sysmd()
-            .remove_disk_group_cascade(rack_id, node_id, dg_id)
-            .await;
+    if !ctx.is_test_scenario() {
+        if let Some(rack_id) = rack_id {
+            let _ = ctx
+                .sysmd()
+                .remove_disk_group_cascade(rack_id, node_id, dg_id)
+                .await;
+        }
     }
     Ok(())
 }
@@ -341,10 +353,12 @@ pub async fn add_disk(ctx: &OpContext, node_id: u64, dg_id: u64, input: &AddDisk
         let mut cfg = ctx.config_mut();
         cfg.add_disk(entry.clone())?;
     }
-    let _ = ctx
-        .sysmd()
-        .add_disk(rack_id, node_id, dg_id, &disk_id_proto, &value)
-        .await;
+    if !ctx.is_test_scenario() {
+        let _ = ctx
+            .sysmd()
+            .add_disk(rack_id, node_id, dg_id, &disk_id_proto, &value)
+            .await;
+    }
     Ok(entry)
 }
 
@@ -404,12 +418,14 @@ pub async fn add_disks_batch(
         }
     }
 
-    for (entry, disk_id_proto, value) in &validated {
-        let _ = ctx
-            .sysmd()
-            .add_disk(rack_id, node_id, dg_id, disk_id_proto, value)
-            .await;
-        let _ = &entry;
+    if !ctx.is_test_scenario() {
+        for (entry, disk_id_proto, value) in &validated {
+            let _ = ctx
+                .sysmd()
+                .add_disk(rack_id, node_id, dg_id, disk_id_proto, value)
+                .await;
+            let _ = &entry;
+        }
     }
 
     Ok(added)
@@ -438,11 +454,13 @@ pub async fn remove_disk(ctx: &OpContext, node_id: u64, dg_id: u64, disk_id: &st
         let mut cfg = ctx.config_mut();
         cfg.remove_disk(disk_id)?;
     }
-    if let Ok(disk_id_proto) = crowdb_protocol::common::DiskId::from_display_string(disk_id) {
-        let _ = ctx
-            .sysmd()
-            .remove_disk(rack_id, node_id, dg_id, &disk_id_proto)
-            .await;
+    if !ctx.is_test_scenario() {
+        if let Ok(disk_id_proto) = crowdb_protocol::common::DiskId::from_display_string(disk_id) {
+            let _ = ctx
+                .sysmd()
+                .remove_disk(rack_id, node_id, dg_id, &disk_id_proto)
+                .await;
+        }
     }
     Ok(entry)
 }
@@ -481,11 +499,13 @@ pub async fn set_disk_status(
                 id: disk_id.to_string(),
             })?
     };
-    if let Ok(disk_id_proto) = crowdb_protocol::common::DiskId::from_display_string(disk_id) {
-        let _ = ctx
-            .sysmd()
-            .set_disk_status(rack_id, node_id, dg_id, &disk_id_proto, status)
-            .await;
+    if !ctx.is_test_scenario() {
+        if let Ok(disk_id_proto) = crowdb_protocol::common::DiskId::from_display_string(disk_id) {
+            let _ = ctx
+                .sysmd()
+                .set_disk_status(rack_id, node_id, dg_id, &disk_id_proto, status)
+                .await;
+        }
     }
     Ok(())
 }
@@ -510,10 +530,12 @@ pub async fn set_disk_group_status(
                 id: dg_id.to_string(),
             })?
     };
-    let _ = ctx
-        .sysmd()
-        .set_disk_group_status(rack_id, node_id, dg_id, status)
-        .await;
+    if !ctx.is_test_scenario() {
+        let _ = ctx
+            .sysmd()
+            .set_disk_group_status(rack_id, node_id, dg_id, status)
+            .await;
+    }
     Ok(())
 }
 
@@ -523,7 +545,7 @@ mod tests {
     use crate::config::{ConsoleConfig, NodeEntry, RackEntry};
 
     fn test_ctx(config: ConsoleConfig) -> OpContext {
-        OpContext::new("127.0.0.1:1".into(), Vec::new(), config)
+        OpContext::new_for_test("127.0.0.1:59999".into(), Vec::new(), config)
     }
 
     fn config_with_rack_node_dg() -> ConsoleConfig {

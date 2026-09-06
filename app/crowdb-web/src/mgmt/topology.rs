@@ -313,6 +313,7 @@ async fn ensure_diskdb_running(
         rpc_workers: None,
         kv_connections: None,
         kv_client_rpc_workers: None,
+        keepalive_interval_secs: state.test_mode.then_some(1),
         server_id: server.id.clone(),
         listen_port,
         http_port,

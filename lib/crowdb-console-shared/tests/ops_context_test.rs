@@ -21,6 +21,14 @@ fn op_context_shares_arc_between_sysmd_and_kv() {
 }
 
 #[test]
+fn op_context_test_scenario_flag_is_explicit() {
+    let production = OpContext::new("127.0.0.1:10100".into(), vec![], ConsoleConfig::default());
+    let test = OpContext::new_for_test("127.0.0.1:59999".into(), vec![], ConsoleConfig::default());
+    assert!(!production.is_test_scenario());
+    assert!(test.is_test_scenario());
+}
+
+#[test]
 fn op_context_config_rw_lock_roundtrip() {
     let ctx = OpContext::new("127.0.0.1:10100".into(), vec![], ConsoleConfig::default());
     // Write a rack into the config.

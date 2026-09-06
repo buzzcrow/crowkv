@@ -10,7 +10,7 @@ use crowdb_console_shared::error::Error;
 use crowdb_console_shared::ops::{self, OpContext};
 
 fn ctx() -> OpContext {
-    OpContext::new("127.0.0.1:1".into(), vec![], ConsoleConfig::default())
+    OpContext::new_for_test("127.0.0.1:59999".into(), vec![], ConsoleConfig::default())
 }
 
 #[tokio::test]

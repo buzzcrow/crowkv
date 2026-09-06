@@ -1142,6 +1142,7 @@ async fn deploy_diskdb_instances(
                 rpc_workers: config.rpc_workers,
                 kv_connections: config.kv_connections,
                 kv_client_rpc_workers: config.kv_client_rpc_workers,
+                keepalive_interval_secs: None,
                 listen_port: ports.listen[index],
                 http_port: ports.http[index],
                 rpc_port: ports.rpc[index],

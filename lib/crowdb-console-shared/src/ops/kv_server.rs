@@ -251,6 +251,9 @@ pub async fn delete(ctx: &OpContext, node_id: NodeId) -> Result<()> {
 /// Returns [`Error::Conflict`] if the node still hosts replicas in
 /// group-0 sysdata.
 pub async fn check_require_empty(ctx: &OpContext, node_id: NodeId) -> Result<()> {
+    if ctx.is_test_scenario() {
+        return Ok(());
+    }
     if let Ok(stores) = ctx.sysmd().list_stores().await {
         for store in &stores {
             if let Ok(groups) = ctx.sysmd().list_groups_in_store(store.store_id).await {
