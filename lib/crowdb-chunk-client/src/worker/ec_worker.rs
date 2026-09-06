@@ -49,7 +49,31 @@ impl EcWorker {
     /// Finalize: EC-encode parity from the accumulated data shards.
     /// Returns `code_num` parity shards.
     pub fn finish(&mut self) -> Result<Vec<Vec<u8>>> {
-        let shard_refs: Vec<&[u8]> = self.data_shards.iter().map(Bytes::as_ref).collect();
+        let shard_size = self.data_shards.iter().map(Bytes::len).max().unwrap_or(0);
+        let padded: Vec<Vec<u8>> = self
+            .data_shards
+            .iter()
+            .filter(|shard| shard.len() != shard_size)
+            .map(|shard| {
+                let mut data = vec![0; shard_size];
+                data[..shard.len()].copy_from_slice(shard);
+                data
+            })
+            .collect();
+        let mut padded_index = 0;
+        let shard_refs: Vec<&[u8]> = self
+            .data_shards
+            .iter()
+            .map(|shard| {
+                if shard.len() == shard_size {
+                    shard.as_ref()
+                } else {
+                    let result = padded.get(padded_index).map_or(&[][..], Vec::as_slice);
+                    padded_index += 1;
+                    result
+                }
+            })
+            .collect();
         let parity = encode_parity_from_shards(self.ec_scheme, &shard_refs)?;
         Ok(parity)
     }

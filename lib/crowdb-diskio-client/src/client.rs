@@ -145,6 +145,10 @@ impl DiskioClient {
 
     /// Send a disk write while retaining an owned `Bytes` allocation through
     /// RPC completion, without copying it into a `Vec` or C++ buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DiskioError::Rpc` if the data is too large or the send fails.
     pub fn write_bytes(
         &self,
         server: &RpcServer,
@@ -166,6 +170,7 @@ impl DiskioClient {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn write_buffer(
         &self,
         server: &RpcServer,

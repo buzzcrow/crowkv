@@ -8,18 +8,20 @@
 //! channel. On EOF, sends any partial last block, then returns (drops
 //! the sender → drive loop sees EOF). No state, stays a free function.
 
+use bytes::Bytes;
 use bytes::BytesMut;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
-use tracing::warn;
-
-use bytes::Bytes;
 
 /// Run the fetch stage: reads from `reader` in ≤ `read_buffer_size`
 /// chunks, accumulates to full blocks, and sends `Bytes` to the block
 /// channel. On EOF, sends any partial last block, then returns (drops
 /// the sender → drive loop sees EOF).
-pub async fn run_fetch_stage<R>(mut reader: R, block_tx: mpsc::Sender<Bytes>, read_buffer_size: usize)
+pub async fn run_fetch_stage<R>(
+    mut reader: R,
+    block_tx: mpsc::Sender<Bytes>,
+    read_buffer_size: usize,
+) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
 {
@@ -34,17 +36,15 @@ where
                 while buf.len() >= read_buffer_size {
                     let block = buf.split_to(read_buffer_size);
                     if block_tx.send(block.freeze()).await.is_err() {
-                        return;
+                        return Ok(());
                     }
                 }
             }
-            Err(_) => {
-                warn!("fetch stage read error, sending partial buffer");
-                break;
-            }
+            Err(error) => return Err(error),
         }
     }
     if !buf.is_empty() {
         let _ = block_tx.send(buf.freeze()).await;
     }
+    Ok(())
 }

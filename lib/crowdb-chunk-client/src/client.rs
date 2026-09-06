@@ -45,6 +45,13 @@ pub struct LargeWriteResult {
 pub struct ChunkIoClient {
     allocator: Arc<dyn crate::ChunkAllocator>,
     disk_writer: Arc<dyn DiskWriter>,
+    topology: Option<Arc<ClientTopology>>,
+}
+
+struct ClientTopology {
+    service: ServiceRegistryClient,
+    hardware: HardwareClient,
+    disk_writer: Arc<RoutedDiskWriter>,
 }
 
 impl ChunkIoClient {
@@ -61,7 +68,12 @@ impl ChunkIoClient {
         let disk_writer = Arc::new(RoutedDiskWriter::connect(&service, &hardware).await?);
         Ok(Self {
             allocator: chunkdb,
-            disk_writer,
+            disk_writer: disk_writer.clone(),
+            topology: Some(Arc::new(ClientTopology {
+                service,
+                hardware,
+                disk_writer,
+            })),
         })
     }
 
@@ -70,7 +82,19 @@ impl ChunkIoClient {
         Self {
             allocator,
             disk_writer,
+            topology: None,
         }
+    }
+
+    /// Rebuild and atomically publish service and disk ownership routes.
+    pub async fn refresh_topology(&self) -> Result<()> {
+        let topology = self.topology.as_ref().ok_or_else(|| {
+            crate::IoError::Topology("discovery is unavailable for a parts-based client".into())
+        })?;
+        topology
+            .disk_writer
+            .refresh(&topology.service, &topology.hardware)
+            .await
     }
 
     /// Start bounded chunk preparation as soon as object metadata is known.
@@ -109,22 +133,26 @@ impl PreparedLargeWrite {
         mut self,
         source: impl tokio::io::AsyncRead + Unpin + Send,
     ) -> Result<LargeWriteResult> {
-        let started = Instant::now();
         let locations = self.writer.write_stream(source, self.object_size).await?;
         let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
         let block_bytes = self.policy.client.read_buffer_size as u64;
-        let data_blocks = logical_bytes.div_ceil(block_bytes);
-        let strips = data_blocks.div_ceil(self.policy.ec_scheme.data_num as u64);
-        let physical_bytes = logical_bytes + strips * self.policy.ec_scheme.code_num as u64 * block_bytes;
+        let strip_data_bytes = block_bytes * self.policy.ec_scheme.data_num as u64;
+        let full_strips = logical_bytes / strip_data_bytes;
+        let tail_bytes = logical_bytes % strip_data_bytes;
+        let strips = full_strips + u64::from(tail_bytes > 0);
+        let tail_parity_bytes = tail_bytes.min(block_bytes);
+        let parity_bytes =
+            (full_strips * block_bytes + tail_parity_bytes) * self.policy.ec_scheme.code_num as u64;
+        let physical_bytes = logical_bytes + parity_bytes;
         Ok(LargeWriteResult {
             chunks: locations.len(),
             locations,
             logical_bytes,
             physical_bytes,
             strips,
-            elapsed: started.elapsed(),
-            preparation_stalls: 0,
-            preparation_stall_time: Duration::ZERO,
+            elapsed: self.prepared_at.elapsed(),
+            preparation_stalls: self.writer.preparation_stalls(),
+            preparation_stall_time: self.writer.preparation_stall_time(),
         })
     }
 

@@ -13,6 +13,7 @@
 //! for push mode.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -43,6 +44,8 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) logical_offset: u64,
     pub(crate) object_size: Option<u64>,
     pub(crate) finished: bool,
+    pub(crate) preparation_stalls: u64,
+    pub(crate) preparation_stall_time: Duration,
 }
 
 impl LargeAsyncObjectWriter {
@@ -65,12 +68,24 @@ impl LargeAsyncObjectWriter {
             logical_offset: 0,
             object_size: None,
             finished: false,
+            preparation_stalls: 0,
+            preparation_stall_time: Duration::ZERO,
         }
     }
 
     /// Per-writer memory footprint.
     pub fn per_writer_memory(&self) -> usize {
         self.config.per_writer_memory(&self.ec_scheme)
+    }
+
+    /// Number of times the data path waited for chunk preparation.
+    pub fn preparation_stalls(&self) -> u64 {
+        self.preparation_stalls
+    }
+
+    /// Total time the data path waited for chunk preparation.
+    pub fn preparation_stall_time(&self) -> Duration {
+        self.preparation_stall_time
     }
 
     /// Start bounded chunk preparation before source consumption begins.
@@ -108,7 +123,20 @@ impl LargeAsyncObjectWriter {
     /// if the channel is exhausted).
     pub(crate) async fn next_chunk(&mut self) -> Result<Option<Chunk>> {
         if let Some(rx) = self.chunk_prefetch_rx.as_mut() {
-            match rx.recv().await {
+            match rx.try_recv() {
+                Ok(result) => return result.map(Some),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.chunk_prefetch_rx = None;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = self.chunk_prefetch_rx.as_mut() {
+            let started = Instant::now();
+            self.preparation_stalls += 1;
+            let result = rx.recv().await;
+            self.preparation_stall_time += started.elapsed();
+            match result {
                 Some(Ok(c)) => return Ok(Some(c)),
                 Some(Err(e)) => return Err(e),
                 None => {
@@ -123,7 +151,10 @@ impl LargeAsyncObjectWriter {
             self.config.clone(),
             crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
         );
+        let started = Instant::now();
+        self.preparation_stalls += 1;
         let chunk = pf.on_demand().await?;
+        self.preparation_stall_time += started.elapsed();
         Ok(Some(chunk))
     }
 
@@ -215,7 +246,11 @@ impl LargeAsyncObjectWriter {
             Ok::<(), IoError>(())
         };
 
-        let (_fetch_result, drive_result) = tokio::join!(fetch_fut, drive_fut);
+        let (fetch_result, drive_result) = tokio::join!(fetch_fut, drive_fut);
+        if let Err(error) = fetch_result {
+            let _ = self.abort_pipeline().await;
+            return Err(IoError::SourceRead(error.to_string()));
+        }
         drive_result?;
 
         self.seal_current().await?;

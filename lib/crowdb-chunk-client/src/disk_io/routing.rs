@@ -18,7 +18,7 @@ use crate::{DiskWriter, IoError, Result};
 
 #[derive(Clone)]
 struct Route {
-    endpoint: String,
+    endpoint: Arc<str>,
     connection: Connection,
 }
 
@@ -106,7 +106,7 @@ impl RoutedDiskWriter {
             routes.insert(
                 id,
                 Route {
-                    endpoint: endpoint.clone(),
+                    endpoint: Arc::from(endpoint.as_str()),
                     connection: connections[endpoint].clone(),
                 },
             );

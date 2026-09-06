@@ -15,7 +15,9 @@
 mod common;
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use crowdb_test_harness::test_dirs;
 
@@ -42,6 +44,26 @@ const UNIT_BYTES: u64 = 4096;
 const DATA_NUM: usize = 4;
 const CODE_NUM: usize = 1;
 const TOTAL: usize = DATA_NUM + CODE_NUM;
+
+struct ErrorReader {
+    emitted: bool,
+}
+
+impl tokio::io::AsyncRead for ErrorReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.emitted {
+            Poll::Ready(Err(std::io::Error::other("source failed")))
+        } else {
+            self.emitted = true;
+            buffer.put_slice(&[0x5a; 128]);
+            Poll::Ready(Ok(()))
+        }
+    }
+}
 
 // ── Mock ChunkAllocator ──────────────────────────────────────────
 
@@ -372,6 +394,39 @@ async fn write_stream_partial_strip_3_blocks() {
 
     // 3 data writes + 1 parity write = 4 writes.
     assert_eq!(diskio.write_count(), 4);
+}
+
+#[tokio::test]
+async fn write_stream_pads_only_parity_for_unaligned_tail() {
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let mut writer = make_writer(chunkdb, diskio.clone(), ec_4_1(), test_config(1024 * 1024));
+    let data = vec![0x7bu8; 4096 + 123];
+
+    let locs = writer
+        .write_stream(data.as_slice(), Some(data.len() as u64))
+        .await
+        .unwrap();
+
+    assert_eq!(locs[0].length, data.len() as u64);
+    assert_eq!(diskio.write_count(), 3);
+}
+
+#[tokio::test]
+async fn write_stream_propagates_source_error_and_aborts() {
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let mut writer = make_writer(chunkdb.clone(), diskio, ec_4_1(), test_config(1024 * 1024));
+
+    let error = writer
+        .write_stream(ErrorReader { emitted: false }, Some(4096))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IoError::SourceRead(_)));
+    assert_eq!(chunkdb.snapshot().delete_calls, 1);
 }
 
 #[tokio::test]

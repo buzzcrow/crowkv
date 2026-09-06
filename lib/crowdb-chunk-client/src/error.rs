@@ -12,6 +12,8 @@ pub enum IoError {
     AllocationFailed(String),
     #[error("disk write failed: {0}")]
     WriteFailed(String),
+    #[error("source read failed: {0}")]
+    SourceRead(String),
     #[error("invalid disk IO topology: {0}")]
     Topology(String),
     #[error("EC encode failed: {0}")]
