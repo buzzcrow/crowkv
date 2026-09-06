@@ -73,6 +73,20 @@ impl LargeAsyncObjectWriter {
         self.config.per_writer_memory(&self.ec_scheme)
     }
 
+    /// Start bounded chunk preparation before source consumption begins.
+    pub(crate) fn prepare(&mut self, object_size: Option<u64>) {
+        self.object_size = object_size;
+        let prefetch = ChunkPrefetch::new(
+            self.allocator.clone(),
+            self.ec_scheme,
+            self.config.clone(),
+            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+        );
+        let (chunk_rx, prefetch_handle) = prefetch.spawn(object_size);
+        self.chunk_prefetch_rx = Some(chunk_rx);
+        self.chunk_prefetch_handle = Some(prefetch_handle);
+    }
+
     /// Seal the current chunk (if any) and record its ProtoLocation.
     pub(crate) async fn seal_current(&mut self) -> Result<()> {
         if let Some(mut cw) = self.chunk_writer.take() {
@@ -158,17 +172,9 @@ impl LargeAsyncObjectWriter {
             return Ok(Vec::new());
         }
 
-        self.object_size = object_size;
-
-        let prefetch = ChunkPrefetch::new(
-            self.allocator.clone(),
-            self.ec_scheme,
-            self.config.clone(),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
-        );
-        let (chunk_rx, prefetch_handle) = prefetch.spawn(object_size);
-        self.chunk_prefetch_rx = Some(chunk_rx);
-        self.chunk_prefetch_handle = Some(prefetch_handle);
+        if self.chunk_prefetch_rx.is_none() {
+            self.prepare(object_size);
+        }
 
         let channel_cap = (self.config.max_cached_buffer / self.config.read_buffer_size).max(1);
         let (block_tx, mut block_rx) = mpsc::channel::<Bytes>(channel_cap);

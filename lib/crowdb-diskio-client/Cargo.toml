@@ -12,6 +12,7 @@ autobenches = false
 workspace = true
 
 [dependencies]
+bytes = "1"
 crowdb-common = { path = "../crowdb-common/rust" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }

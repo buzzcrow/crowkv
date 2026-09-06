@@ -74,7 +74,22 @@ impl Buffer {
 
     /// Create a standalone buffer from a Vec (copies into malloc'd memory).
     pub fn from_vec(data: Vec<u8>) -> Self {
-        Self::from_bytes(&data)
+        Self::from_vec_offset(data, 0)
+    }
+
+    /// Wrap immutable owned bytes without copying their allocation.
+    pub fn from_owned_bytes(data: bytes::Bytes) -> Self {
+        if data.is_empty() {
+            return Buffer {
+                handle: std::ptr::null_mut(),
+            };
+        }
+        let data_ptr = data.as_ptr();
+        let len = data.len();
+        let ctx = Box::into_raw(Box::new(data)).cast::<std::ffi::c_void>();
+        let handle =
+            unsafe { sys::crowdb_rpc_buffer_create_external(data_ptr, len as u32, Some(free_bytes_cb), ctx) };
+        Buffer { handle }
     }
 
     /// Create an external buffer wrapping a Vec allocation (zero-copy).
@@ -183,5 +198,13 @@ extern "C" fn free_vec_cb(ctx: *mut std::ffi::c_void) {
         // from_vec_offset. We reclaim it here exactly once (the C++ Buffer
         // release() calls free_cb once when refcount hits zero).
         unsafe { drop(Box::from_raw(ctx.cast::<Vec<u8>>())) };
+    }
+}
+
+extern "C" fn free_bytes_cb(ctx: *mut std::ffi::c_void) {
+    if !ctx.is_null() {
+        // SAFETY: `ctx` came from `Box::into_raw(Box::new(Bytes))` above and
+        // the C++ buffer invokes its release callback exactly once.
+        unsafe { drop(Box::from_raw(ctx.cast::<bytes::Bytes>())) };
     }
 }

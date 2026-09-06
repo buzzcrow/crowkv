@@ -267,6 +267,11 @@ impl ServiceRegistryClient {
 // ── diskio convenience wrappers ─────────────────────────────────
 
 impl ServiceRegistryClient {
+    /// Read all live diskio instances.
+    pub async fn read_all_diskio_instances(&self) -> Result<Vec<(InstanceId, InstanceValue)>> {
+        self.read_all_instances("diskio").await
+    }
+
     /// Register a diskio instance with `owned_dg_ids` and optional
     /// per-disk-group usage summaries. Uses the "diskio" service group
     /// so it doesn't pollute the "diskdb" group.

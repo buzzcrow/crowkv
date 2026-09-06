@@ -17,16 +17,16 @@ refine it through a three-node `NullDisk` benchmark.
 - [x] **Correct completion ordering**: sequence fsync after data/parity writes
   and add focused tests. Files: `lib/crowdb-chunk-client/src/chunk/`,
   `lib/crowdb-chunk-client/tests/`.
-- [ ] **Add public client API**: own discovery, routing, preparation, execution,
+- [x] **Add public client API**: own discovery, routing, preparation, execution,
   and results in the library. Files: `lib/crowdb-chunk-client/src/client.rs`,
   `lib/crowdb-chunk-client/src/client/`, `lib/crowdb-chunk-client/src/lib.rs`.
-- [ ] **Pass simple E2E**: use the public API for multi-strip and chunk-rotation
+- [x] **Pass simple E2E**: use the public API for multi-strip and chunk-rotation
   writes on one real stack. Files: `lib/crowdb-chunk-client/tests/`,
   `lib/crowdb-test-harness/`.
 
 ## Distributed Flow
 
-- [ ] **Add DiskIO routing**: publish immutable disk-owner snapshots and bounded
+- [x] **Add DiskIO routing**: publish immutable disk-owner snapshots and bounded
   endpoint pools. Files: `lib/crowdb-chunk-client/src/disk_io/`,
   `lib/crowdb-kv-client/src/`.
 - [ ] **Deploy three DiskIO services**: extend combined local deployment,
@@ -37,7 +37,7 @@ refine it through a three-node `NullDisk` benchmark.
 
 ## Performance
 
-- [ ] **Remove payload copy**: preserve owned payload through DiskIO RPC
+- [x] **Remove payload copy**: preserve owned payload through DiskIO RPC
   completion. Files: `lib/crowdb-diskio-client/src/`,
   `lib/crowdb-chunk-client/src/disk_io/`.
 - [ ] **Refine critical path**: measure and apply bounded write/EC/finalization

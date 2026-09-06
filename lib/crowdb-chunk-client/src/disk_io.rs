@@ -9,5 +9,7 @@
 //! trait.
 
 pub mod disk_writer;
+pub mod routing;
 
 pub use disk_writer::{DiskWriter, DiskioBlockWriter};
+pub use routing::RoutedDiskWriter;

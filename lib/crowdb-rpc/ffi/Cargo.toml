@@ -21,6 +21,7 @@ test-util = ["dep:ctor"]
 [dependencies]
 crowdb-common = { path = "../../crowdb-common/rust" }
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+bytes = "1"
 ctor = { version = "1.0.13", optional = true }
 
 [dev-dependencies]

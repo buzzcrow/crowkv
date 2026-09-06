@@ -21,6 +21,7 @@
 )]
 
 pub mod chunk;
+pub mod client;
 pub mod config;
 pub mod disk_io;
 pub mod error;
@@ -30,8 +31,11 @@ pub mod worker;
 pub mod writer;
 
 pub use chunk::{ChunkPrefetch, ChunkWriter, EcStripWriter, MirrorStripWriter, StripResult, StripWriter};
+pub use client::{
+    ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
+};
 pub use config::ChunkClientConfig;
-pub use disk_io::{DiskWriter, DiskioBlockWriter};
+pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
 pub use error::{IoError, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
 pub use traits::ChunkAllocator;

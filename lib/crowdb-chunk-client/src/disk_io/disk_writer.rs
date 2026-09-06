@@ -60,13 +60,13 @@ impl DiskWriter for DiskioBlockWriter {
         let zone_offset = seg.unit_offset * unit_bytes;
         let fut = self
             .client
-            .write(
+            .write_bytes(
                 &self.server,
                 &self.conn,
                 disk_id,
                 seg.zone_index,
                 zone_offset,
-                data.to_vec(),
+                data,
             )
             .map_err(|e| IoError::WriteFailed(e.to_string()))?;
         let code = DiskioClient::await_write_response(fut)

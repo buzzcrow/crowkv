@@ -17,6 +17,7 @@ test-util = []
 [dependencies]
 crowdb-chunkdb-client = { path = "../crowdb-chunkdb-client" }
 crowdb-diskio-client = { path = "../crowdb-diskio-client" }
+crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-common = { path = "../crowdb-common/rust" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
@@ -25,13 +26,13 @@ bytes = "1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
+arc-swap = "1.9"
 
 [dev-dependencies]
 # Self dev-dependency: auto-enables the `test-util` feature for this
 # crate's own integration tests.
 crowdb-chunk-client = { path = ".", features = ["test-util"] }
 crowdb-test-harness = { path = "../crowdb-test-harness", features = ["diskio", "diskdb", "chunkdb"] }
-crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-diskdb-client = { path = "../crowdb-diskdb-client" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

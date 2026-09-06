@@ -131,8 +131,52 @@ impl DiskioClient {
         zone_offset: u64,
         data: Vec<u8>,
     ) -> Result<CallFuture, DiskioError> {
-        let req_id = self.next_id();
         let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+        self.write_buffer(
+            server,
+            conn,
+            disk_id,
+            zone_index,
+            zone_offset,
+            size,
+            Buffer::from_vec(data),
+        )
+    }
+
+    /// Send a disk write while retaining an owned `Bytes` allocation through
+    /// RPC completion, without copying it into a `Vec` or C++ buffer.
+    pub fn write_bytes(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        disk_id: DiskId,
+        zone_index: u32,
+        zone_offset: u64,
+        data: bytes::Bytes,
+    ) -> Result<CallFuture, DiskioError> {
+        let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+        self.write_buffer(
+            server,
+            conn,
+            disk_id,
+            zone_index,
+            zone_offset,
+            size,
+            Buffer::from_owned_bytes(data),
+        )
+    }
+
+    fn write_buffer(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        disk_id: DiskId,
+        zone_index: u32,
+        zone_offset: u64,
+        size: u32,
+        data_buf: Buffer,
+    ) -> Result<CallFuture, DiskioError> {
+        let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
         let fb_disk_id = disk_id.to_fb();
         let off = FBDiskWriteRequest::create(
@@ -148,7 +192,6 @@ impl DiskioClient {
         );
         fbb.finish(off, None);
         let control = Buffer::from_bytes(fbb.finished_data());
-        let data_buf = Buffer::from_vec(data);
         let msg_type = FBMsgType::EDiskWriteRequest.0 as u16;
         self.rpc
             .call(server, conn, req_id, control, Some(data_buf), msg_type)
