@@ -28,7 +28,7 @@ use crate::traits::ChunkAllocator;
 use crate::writer::fetch::run_fetch_stage;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
-use crowdb_protocol::chunkdb::rpc::{Chunk, Location as ProtoLocation};
+use crowdb_protocol::chunkdb::rpc::{Chunk, DeleteChunkRequest, Location as ProtoLocation};
 
 /// Large-object writer — async stream. Owns the chunk-level drive
 /// loop + fetch stage; strip-level rotation is in `ChunkWriter::push`.
@@ -249,12 +249,15 @@ impl LargeAsyncObjectWriter {
             Ok::<(), IoError>(())
         };
 
-        let (fetch_result, drive_result) = tokio::join!(fetch_fut, drive_fut);
-        if let Err(error) = fetch_result {
-            let _ = self.abort_pipeline().await;
-            return Err(IoError::SourceRead(error.to_string()));
-        }
-        if let Err(error) = drive_result {
+        let pipeline_result = tokio::try_join!(
+            async {
+                fetch_fut
+                    .await
+                    .map_err(|error| IoError::SourceRead(error.to_string()))
+            },
+            drive_fut,
+        );
+        if let Err(error) = pipeline_result {
             let _ = self.abort_pipeline().await;
             return Err(error);
         }
@@ -274,6 +277,21 @@ impl LargeAsyncObjectWriter {
         }
         if let Some(handle) = self.chunk_prefetch_handle.take() {
             handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(mut rx) = self.chunk_prefetch_rx.take() {
+            while let Ok(result) = rx.try_recv() {
+                if let Ok(chunk) = result {
+                    if let Some(chunk_id) = chunk.id {
+                        let _ = self
+                            .allocator
+                            .delete_chunk(DeleteChunkRequest {
+                                chunk_id: Some(chunk_id),
+                            })
+                            .await;
+                    }
+                }
+            }
         }
         Ok(std::mem::take(&mut self.locations))
     }

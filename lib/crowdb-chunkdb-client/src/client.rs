@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use arc_swap::ArcSwap;
 
 use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
+use crowdb_protocol::chunk_id::ChunkIdParts;
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse,
     DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse,
@@ -122,21 +123,25 @@ impl ChunkdbClient {
             .ok_or_else(|| ChunkdbClientError::Unreachable("no chunkdb instances registered".into()))
     }
 
-    /// Resolve the endpoint string for the chunk ID's owning
-    /// instance. Sharded mode fails closed when routing is unavailable.
-    async fn endpoint_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<String> {
-        if let Some(binding) = &self.range_binding {
-            if let Some(id) = chunk_id {
-                return binding
-                    .route(id)
-                    .await
-                    .map(|route| route.rpc_endpoint)
-                    .map_err(|error| {
-                        ChunkdbClientError::Unreachable(format!("range routing failed: {error}"))
-                    });
+    async fn endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {
+        if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id) {
+            binding
+                .route(id)
+                .await
+                .map_err(|error| ChunkdbClientError::Unreachable(format!("range routing failed: {error}")))?;
+            let bucket = ChunkIdParts::from_proto(id).hash_to_bucket();
+            let route = binding
+                .route_with_fallback(bucket)
+                .map_err(|error| ChunkdbClientError::Unreachable(format!("range routing failed: {error}")))?;
+            let mut endpoints = vec![route.primary.rpc_endpoint];
+            if let Some(fallback) = route.fallback {
+                if fallback.rpc_endpoint != endpoints[0] {
+                    endpoints.push(fallback.rpc_endpoint);
+                }
             }
+            return Ok(endpoints);
         }
-        self.first_endpoint().await
+        Ok(vec![self.first_endpoint().await?])
     }
 
     /// Execute a crowdb-rpc call with retry on transient errors.
@@ -149,25 +154,33 @@ impl ChunkdbClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.initial_backoff;
         loop {
-            let endpoint = self.endpoint_for_chunk(chunk_id).await?;
-            match op(Arc::clone(&transport), endpoint).await {
-                Ok(value) => return Ok(value),
-                Err(err) => {
-                    if !err.is_transient() || attempts >= self.retry.max_retries {
-                        return Err(err);
-                    }
-                    attempts += 1;
-                    tokio::time::sleep(backoff).await;
-                    backoff = backoff.saturating_mul(2);
-                    let _ = self.refresh_endpoints().await;
-                    if matches!(err, ChunkdbClientError::NotMyRange(_)) {
-                        if let Some(binding) = &self.range_binding {
-                            if let Some(id) = chunk_id {
-                                let _ = binding.refresh_and_route(id).await;
-                            } else {
-                                let _ = binding.refresh().await;
-                            }
-                        }
+            let endpoints = self.endpoints_for_chunk(chunk_id).await?;
+            let mut last_error = None;
+            for endpoint in endpoints {
+                match op(Arc::clone(&transport), endpoint).await {
+                    Ok(value) => return Ok(value),
+                    Err(error) if error.is_transient() => last_error = Some(error),
+                    Err(error) => return Err(error),
+                }
+            }
+            let Some(error) = last_error else {
+                return Err(ChunkdbClientError::Unreachable(
+                    "range routing supplied no endpoint".into(),
+                ));
+            };
+            if attempts >= self.retry.max_retries {
+                return Err(error);
+            }
+            attempts += 1;
+            tokio::time::sleep(backoff).await;
+            backoff = backoff.saturating_mul(2);
+            let _ = self.refresh_endpoints().await;
+            if matches!(error, ChunkdbClientError::NotMyRange(_)) {
+                if let Some(binding) = &self.range_binding {
+                    if let Some(id) = chunk_id {
+                        let _ = binding.refresh_and_route(id).await;
+                    } else {
+                        let _ = binding.refresh().await;
                     }
                 }
             }
@@ -180,24 +193,34 @@ impl ChunkdbClient {
         let mut attempts = 0_u32;
         let mut backoff = self.retry.initial_backoff;
         loop {
-            let endpoint = self.endpoint_for_chunk(chunk_id.as_ref()).await?;
-            // Allocation is not idempotent at the DiskDB layer. Retry only
-            // NotMyRange, which is rejected before mutation. A transport
-            // failure after send is ambiguous and must not be replayed.
-            match self.rpc_transport.send_allocate_chunk(&endpoint, &req).await {
-                Err(error @ ChunkdbClientError::NotMyRange(_)) => {
-                    if attempts >= self.retry.max_retries {
-                        return Err(error);
+            let endpoints = self.endpoints_for_chunk(chunk_id.as_ref()).await?;
+            let mut not_my_range = None;
+            for endpoint in endpoints {
+                // Allocation is not idempotent at the DiskDB layer. Trying the
+                // transition fallback is safe only after NotMyRange, which is
+                // rejected before mutation.
+                match self.rpc_transport.send_allocate_chunk(&endpoint, &req).await {
+                    Ok(response) => return Ok(response),
+                    Err(error @ ChunkdbClientError::NotMyRange(_)) => {
+                        not_my_range = Some(error);
                     }
-                    attempts += 1;
-                    tokio::time::sleep(backoff).await;
-                    backoff = backoff.saturating_mul(2);
-                    let _ = self.refresh_endpoints().await;
-                    if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id.as_ref()) {
-                        let _ = binding.refresh_and_route(id).await;
-                    }
+                    Err(error) => return Err(error),
                 }
-                result => return result,
+            }
+            let Some(error) = not_my_range else {
+                return Err(ChunkdbClientError::Unreachable(
+                    "range routing supplied no endpoint".into(),
+                ));
+            };
+            if attempts >= self.retry.max_retries {
+                return Err(error);
+            }
+            attempts += 1;
+            tokio::time::sleep(backoff).await;
+            backoff = backoff.saturating_mul(2);
+            let _ = self.refresh_endpoints().await;
+            if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id.as_ref()) {
+                let _ = binding.refresh_and_route(id).await;
             }
         }
     }

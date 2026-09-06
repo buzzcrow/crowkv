@@ -86,12 +86,14 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
         }
     } else {
         println!(
-            "chunkio write: requested={} objects={} errors={} incomplete={} stop={} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
+            "chunkio write: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
             result.requested_objects,
+            args.object_size,
             result.objects,
             result.errors,
             result.incomplete_objects,
             result.stop_reason,
+            result.objects_per_sec,
             result.logical_mib_per_sec,
             result.physical_mib_per_sec,
             result.latency_p50_us,

@@ -6,6 +6,19 @@
 #   CHUNKIO_BENCH_LOG_ROOT    retained run root
 #   CHUNKIO_BENCH_RESULTS     result TSV path
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
+#
+# Reference run (2026-09-06): AMD Ryzen 9 5950X, 16c/32t, Linux 6.8,
+# three-node loopback deployment, three NullDisk instances, EC 4+1,
+# 1 MiB blocks, 1 GiB chunks, two 64 MiB objects per worker.
+#
+# Case      Obj  Size MiB  C  TPS obj/s  logical MiB/s  physical MiB/s  p50 us   p99 us   errors
+# large_1t    2        64  1       0.39           25.0            31.3  2471891  2471891       0
+# large_4t    8        64  4       2.20          140.5           175.7  1686185  1873776       0
+#
+# Memory-counter samples for the same run were 90.4/292.4 MiB/s average/max
+# for large_1t and 216.9/411.8 MiB/s for large_4t. These values are retained
+# as a diagnostic baseline, not hard thresholds; the sentinel gates complete
+# object accounting, zero errors, stop reason, and complete service metrics.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -82,8 +95,9 @@ run_case() {
     local deploy_status=$?
     set -e
     if [ "$deploy_status" -ne 0 ]; then
-        printf '%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\tunsupported\tunsupported\n' \
-            "$label" "$objects" "$object_size" "$concurrency" "$objects" >>"$RESULTS_FILE"
+        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\tunsupported\tunsupported\n' \
+            "$label" "$objects" "$object_size" "$((object_size / 1048576))" \
+            "$concurrency" "$objects" >>"$RESULTS_FILE"
         echo "ERROR: deployment failed for $label (exit=$deploy_status)" >&2
         FAILURES=$((FAILURES + 1))
         destroy_cluster
@@ -111,29 +125,33 @@ run_case() {
         max_bw=unsupported
     fi
     if [ -z "$line" ]; then
-        printf '%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t%s\t%s\n' \
-            "$label" "$objects" "$object_size" "$concurrency" "$objects" "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
+        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\t%s\t%s\n' \
+            "$label" "$objects" "$object_size" "$((object_size / 1048576))" \
+            "$concurrency" "$objects" "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
     else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$label" "$objects" "$object_size" "$concurrency" \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$label" "$objects" "$object_size" "$((object_size / 1048576))" "$concurrency" \
             "$(field "$line" objects)" "$(field "$line" errors)" \
             "$(field "$line" incomplete)" "$(field "$line" stop)" \
-            "$(field "$line" logical_mib_s)" "$(field "$line" physical_mib_s)" \
+            "$(field "$line" objects_s)" "$(field "$line" logical_mib_s)" \
+            "$(field "$line" physical_mib_s)" \
             "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
             "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
     fi
-    local completed errors incomplete stop logical physical p50 p99 valid=1
+    local completed errors incomplete stop objects_s logical physical p50 p99 valid=1
     completed=$(field "$line" objects)
     errors=$(field "$line" errors)
     incomplete=$(field "$line" incomplete)
     stop=$(field "$line" stop)
+    objects_s=$(field "$line" objects_s)
     logical=$(field "$line" logical_mib_s)
     physical=$(field "$line" physical_mib_s)
     p50=$(field "$line" p50_us)
     p99=$(field "$line" p99_us)
     if [ -z "$line" ] || [ "$completed" != "$objects" ] || [ "$errors" != 0 ] \
         || [ "$incomplete" != 0 ] || [ "$stop" != complete ] \
-        || [ -z "$logical" ] || [ -z "$physical" ] || [ -z "$p50" ] || [ -z "$p99" ]; then
+        || [ -z "$objects_s" ] || [ -z "$logical" ] || [ -z "$physical" ] \
+        || [ -z "$p50" ] || [ -z "$p99" ]; then
         valid=0
     fi
     if [ "$status" -ne 0 ] || [ "$valid" -ne 1 ] || ! verify_logs; then
@@ -147,7 +165,7 @@ echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 pixi run build-cpp
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
-printf 'case\trequested\tsize_bytes\tconcurrency\tcompleted\terrors\tincomplete\tstop\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
+printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
 
 run_case large_1t 2 67108864 1
 run_case large_4t 8 67108864 4

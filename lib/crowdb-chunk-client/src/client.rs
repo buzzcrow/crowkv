@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::EcScheme;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
+use crowdb_kv_client::{
+    ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
+};
 use crowdb_protocol::chunkdb::rpc::Location;
 
 use crate::{ChunkClientConfig, DiskWriter, LargeAsyncObjectWriter, Result, RoutedDiskWriter};
@@ -59,11 +61,13 @@ impl ChunkIoClient {
     pub async fn connect(config: ChunkIoClientConfig) -> Result<Self> {
         let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(config.management_seeds)));
         let service = ServiceRegistryClient::from_shared(kv.clone());
-        let hardware = HardwareClient::from_shared(kv);
-        let chunkdb = Arc::new(ChunkdbClient::new(
-            service.clone(),
-            Arc::new(ChunkdbRpcTransport::new()),
-        ));
+        let hardware = HardwareClient::from_shared(kv.clone());
+        let range_binding = discover_current_range_bindings(&service, kv.clone()).await?;
+        let mut chunkdb = ChunkdbClient::new(service.clone(), Arc::new(ChunkdbRpcTransport::new()));
+        if let Some(range_binding) = range_binding {
+            chunkdb = chunkdb.with_range_binding(range_binding);
+        }
+        let chunkdb = Arc::new(chunkdb);
         chunkdb.refresh_endpoints().await?;
         let disk_writer = Arc::new(RoutedDiskWriter::connect(&service, &hardware).await?);
         Ok(Self {
@@ -116,6 +120,40 @@ impl ChunkIoClient {
             policy,
             prepared_at: Instant::now(),
         }
+    }
+}
+
+async fn discover_current_range_bindings(
+    service: &ServiceRegistryClient,
+    kv: Arc<CrowdbKvClient>,
+) -> Result<Option<RangeBindingClient>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let bindings = RangeBindingClient::from_shared(kv);
+    loop {
+        bindings
+            .refresh()
+            .await
+            .map_err(|error| crate::IoError::Topology(format!("chunkdb range discovery failed: {error}")))?;
+        let instances = service.read_all_chunkdb_instances().await.map_err(|error| {
+            crate::IoError::Topology(format!("chunkdb instance discovery failed: {error}"))
+        })?;
+        let current = bindings.snapshot().iter().all(|binding| {
+            instances.iter().any(|(instance_id, instance)| {
+                *instance_id == binding.instance_id && instance.rpc_endpoint == binding.rpc_endpoint
+            })
+        });
+        if bindings.is_empty() {
+            return Ok(None);
+        }
+        if current {
+            return Ok(Some(bindings));
+        }
+        if Instant::now() >= deadline {
+            return Err(crate::IoError::Topology(
+                "chunkdb range bindings did not converge with live instances".into(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

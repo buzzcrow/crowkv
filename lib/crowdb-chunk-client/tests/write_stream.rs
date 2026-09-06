@@ -40,6 +40,7 @@ use crowdb_protocol::common::DiskId as ProtoDiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use common::LocalFileDiskWriter;
+use tokio::io::AsyncReadExt;
 
 const UNIT_BYTES: u64 = 4096;
 const DATA_NUM: usize = 4;
@@ -254,6 +255,36 @@ impl ChunkAllocator for MockChunkAllocator {
     }
 }
 
+#[derive(Debug)]
+struct FailingChunkAllocator;
+
+#[async_trait]
+impl ChunkAllocator for FailingChunkAllocator {
+    async fn allocate_chunk(&self, _req: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
+        Err(IoError::AllocationFailed("injected allocation failure".into()))
+    }
+
+    async fn append_chunk(&self, _req: AppendChunkRequest) -> Result<AppendChunkResponse> {
+        unreachable!()
+    }
+
+    async fn query_chunk(&self, _req: QueryChunkRequest) -> Result<QueryChunkResponse> {
+        unreachable!()
+    }
+
+    async fn seal_chunk(&self, _req: SealChunkRequest) -> Result<SealChunkResponse> {
+        unreachable!()
+    }
+
+    async fn delete_chunk(&self, _req: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
+        unreachable!()
+    }
+
+    async fn update_chunk_strip(&self, _req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
+        unreachable!()
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
@@ -427,7 +458,33 @@ async fn write_stream_propagates_source_error_and_aborts() {
         .unwrap_err();
 
     assert!(matches!(error, IoError::SourceRead(_)));
-    assert_eq!(chunkdb.snapshot().delete_calls, 1);
+    let state = chunkdb.snapshot();
+    assert_eq!(state.delete_calls, state.allocate_calls);
+}
+
+#[tokio::test]
+async fn write_stream_returns_allocation_error_when_fetch_is_backpressured() {
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let config = Arc::new(ChunkClientConfig {
+        max_cached_buffer: 4096,
+        ..(*test_config(4096)).clone()
+    });
+    let mut writer = LargeAsyncObjectWriter::new(
+        Arc::new(FailingChunkAllocator),
+        Arc::new(diskio),
+        ec_4_1(),
+        config,
+    );
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        writer.write_stream(tokio::io::repeat(0x5a).take(64 * 1024), Some(64 * 1024)),
+    )
+    .await
+    .expect("allocation failure must cancel the backpressured fetch stage");
+
+    assert!(matches!(result, Err(IoError::AllocationFailed(_))));
 }
 
 #[tokio::test]
