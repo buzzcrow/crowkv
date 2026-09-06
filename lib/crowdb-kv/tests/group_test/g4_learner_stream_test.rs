@@ -97,7 +97,7 @@ async fn poll_for_value(client: &TestKvClient, key: &[u8], expected: &[u8], time
 async fn learner_stream_rapid_fire_writes() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    wait_for_leader(&cluster, Duration::from_secs(5))
+    wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
     let leader = cluster.elected_leader().expect("leader present");
@@ -130,7 +130,7 @@ async fn learner_stream_rapid_fire_writes() {
 async fn chosen_notification_advances_follower_frontier() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    wait_for_leader(&cluster, Duration::from_secs(5))
+    wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
     let leader = cluster.elected_leader().expect("leader present");

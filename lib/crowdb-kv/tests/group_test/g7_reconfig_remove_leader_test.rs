@@ -153,7 +153,7 @@ fn isolate_node(node: &Arc<PxKvStore>) {
 async fn reconfig_remove_leader() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -188,7 +188,7 @@ async fn reconfig_remove_leader() {
     assert_eq!(survivors.len(), 2, "two survivors after leader removal");
 
     // 3. A new leader must be elected on the surviving 2 nodes.
-    let new_leader_id = wait_for_leader_in(&survivors, Duration::from_secs(15))
+    let new_leader_id = wait_for_leader_in(&survivors, Duration::from_secs(3))
         .await
         .expect("a new leader is elected after leader removal");
     assert_ne!(
@@ -207,7 +207,7 @@ async fn reconfig_remove_leader() {
     // Poll for the pre-reconfig write to surface through the new leader.
     let start = Instant::now();
     let mut recovered = None;
-    while start.elapsed() < Duration::from_secs(5) {
+    while start.elapsed() < Duration::from_secs(3) {
         if let Some(v) = read_via_node(&cluster, new_leader, b"rc-rmldr-1").await {
             recovered = Some(v);
             break;
@@ -228,7 +228,7 @@ async fn reconfig_remove_leader() {
 
     let start = Instant::now();
     let mut confirmed = None;
-    while start.elapsed() < Duration::from_secs(5) {
+    while start.elapsed() < Duration::from_secs(3) {
         if let Some(v) = read_via_node(&cluster, new_leader, b"rc-rmldr-2").await {
             confirmed = Some(v);
             break;

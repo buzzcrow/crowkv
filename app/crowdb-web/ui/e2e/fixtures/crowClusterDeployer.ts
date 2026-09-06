@@ -5,6 +5,7 @@ import { expect, request } from '@playwright/test';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -269,6 +270,55 @@ export async function stopNodeServer(baseURL: string, nodeId: number) {
     console.warn(`stopNodeServer(${nodeId}) failed:`, err);
   } finally {
     await api.dispose();
+  }
+}
+
+async function endpointAcceptsConnections(endpoint: string): Promise<boolean> {
+  const url = new URL(endpoint);
+  return new Promise((resolveConnection) => {
+    const socket = createConnection({ host: url.hostname, port: Number(url.port) });
+    let settled = false;
+    const finish = (reachable: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolveConnection(reachable);
+    };
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+    socket.setTimeout(250, () => finish(false));
+  });
+}
+
+/** Stop and promptly terminate a disposable local E2E server before port reuse. */
+export async function stopNodeServerAndReleasePorts(baseURL: string, nodeId: number) {
+  const api = await apiContext(baseURL);
+  let pid = 0;
+  let mgmtUrl = '';
+  try {
+    const response = await api.get(`/api/nodes/${encodeURIComponent(nodeId)}/server`);
+    if (response.ok()) {
+      const server = await response.json();
+      pid = Number(server.pid ?? 0);
+      mgmtUrl = String(server.mgmt_url ?? '');
+    }
+  } finally {
+    await api.dispose();
+  }
+
+  await stopNodeServer(baseURL, nodeId);
+  if (pid <= 0) return;
+
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+  if (mgmtUrl) {
+    await expect.poll(() => endpointAcceptsConnections(mgmtUrl), {
+      timeout: 3_000,
+      intervals: [100],
+    }).toBe(false);
   }
 }
 

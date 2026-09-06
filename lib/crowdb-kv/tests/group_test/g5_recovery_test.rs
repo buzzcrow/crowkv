@@ -120,7 +120,7 @@ fn force_step_down(cluster: &TestCluster, leader_id: u64, reason: &str) -> bool 
 async fn bulk_phase1_recovers_all_committed_values() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let leader1 = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader1 = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -142,7 +142,7 @@ async fn bulk_phase1_recovers_all_committed_values() {
 
     // Wait for a new leader to be elected. The new leader will run
     // bulk Phase 1 to recover any slots it hasn't seen chosen.
-    let _leader2 = wait_for_leader(&cluster, Duration::from_secs(5))
+    let _leader2 = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("second leader elected after step-down");
 
@@ -152,7 +152,7 @@ async fn bulk_phase1_recovers_all_committed_values() {
     for i in 0u64..10 {
         let key = format!("recover-{i}");
         let val = format!("val-{i}");
-        poll_for_value(&cluster, key.as_bytes(), val.as_bytes(), Duration::from_secs(5)).await;
+        poll_for_value(&cluster, key.as_bytes(), val.as_bytes(), Duration::from_secs(3)).await;
     }
 
     // Write a new key through the new leader to verify it's functional.
@@ -173,7 +173,7 @@ async fn bulk_phase1_recovers_all_committed_values() {
 async fn bulk_phase1_after_second_step_down() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let leader1 = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader1 = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -183,7 +183,7 @@ async fn bulk_phase1_after_second_step_down() {
 
     // First step-down.
     assert!(force_step_down(&cluster, leader1, "first"));
-    let leader2 = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader2 = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("second leader elected");
 
@@ -192,14 +192,14 @@ async fn bulk_phase1_after_second_step_down() {
 
     // Second step-down.
     assert!(force_step_down(&cluster, leader2, "second"));
-    wait_for_leader(&cluster, Duration::from_secs(5))
+    wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("third leader elected");
 
     // All keys must survive two leader changes.
-    poll_for_value(&cluster, b"b1", b"v1", Duration::from_secs(5)).await;
-    poll_for_value(&cluster, b"b2", b"v2", Duration::from_secs(5)).await;
-    poll_for_value(&cluster, b"b3", b"v3", Duration::from_secs(5)).await;
+    poll_for_value(&cluster, b"b1", b"v1", Duration::from_secs(3)).await;
+    poll_for_value(&cluster, b"b2", b"v2", Duration::from_secs(3)).await;
+    poll_for_value(&cluster, b"b3", b"v3", Duration::from_secs(3)).await;
 
     cluster.shutdown().await;
 }

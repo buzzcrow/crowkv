@@ -58,7 +58,7 @@ async fn read_via_leader(cluster: &TestCluster, key: &[u8]) -> Option<Vec<u8>> {
 async fn two_replica_even_quorum_writes_succeed_with_both_up() {
     let cluster = start_cluster_no_leader(&[1, 2]).await;
 
-    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("leader elected in 2-node cluster");
 
@@ -149,7 +149,7 @@ async fn leader_change_simulation() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
     // Phase 1: initial leader, write k1.
-    let leader1 = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader1 = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
     assert!(
@@ -162,7 +162,7 @@ async fn leader_change_simulation() {
         force_step_down(&cluster, leader1, "first step-down"),
         "first StepDown should be accepted"
     );
-    let second_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let second_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("second leader elected");
     assert!(
@@ -175,13 +175,13 @@ async fn leader_change_simulation() {
         force_step_down(&cluster, second_id, "second step-down"),
         "second StepDown should be accepted"
     );
-    wait_for_leader(&cluster, Duration::from_secs(5))
+    wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("third leader elected");
 
     // Verify both keys survive.
-    poll_for_value(&cluster, b"lc1", b"first", Duration::from_secs(5)).await;
-    poll_for_value(&cluster, b"lc2", b"second", Duration::from_secs(5)).await;
+    poll_for_value(&cluster, b"lc1", b"first", Duration::from_secs(3)).await;
+    poll_for_value(&cluster, b"lc2", b"second", Duration::from_secs(3)).await;
 
     cluster.shutdown().await;
 }

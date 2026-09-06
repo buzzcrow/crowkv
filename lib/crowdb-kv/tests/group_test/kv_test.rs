@@ -90,7 +90,7 @@ async fn assert_cluster_value(cluster: &TestCluster, key: &[u8], expected: Optio
     // R65: follower apply is driven by ChosenNotice (async, after quorum
     // confirmation) rather than Accept (sync, during propose). Poll until
     // all nodes converge, with a bounded timeout.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let mut all_match = true;
         for node in cluster.nodes() {

@@ -77,7 +77,7 @@ async fn batch_write(client: &mut TestKvClient, items: Vec<(&[u8], &[u8], bool)>
 async fn assert_cluster_value(cluster: &TestCluster, key: &[u8], expected: Option<&[u8]>) {
     // R65: follower apply is driven by ChosenNotice (async, after quorum
     // confirmation). Poll until all nodes converge, with a bounded timeout.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let mut all_match = true;
         for node in cluster.nodes() {

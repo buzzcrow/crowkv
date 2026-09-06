@@ -215,7 +215,7 @@ async fn add_node_to_cluster(cluster: &TestCluster, new_id: u64) -> Arc<PxKvStor
 async fn reconfig_add_replica() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -231,10 +231,10 @@ async fn reconfig_add_replica() {
     // Write after reconfig — retry until the leader accepts (quorum
     // is now 3-of-4, but membership may take a moment to propagate).
     assert!(
-        put_via_leader_retry(&cluster, b"rc-add-2", b"val-2", 2, Duration::from_secs(5)).await,
+        put_via_leader_retry(&cluster, b"rc-add-2", b"val-2", 2, Duration::from_secs(3)).await,
         "write after add-replica should commit"
     );
-    poll_for_value(&cluster, b"rc-add-2", b"val-2", Duration::from_secs(5)).await;
+    poll_for_value(&cluster, b"rc-add-2", b"val-2", Duration::from_secs(3)).await;
 
     // Original data survives.
     poll_for_value(&cluster, b"rc-add-1", b"val-1", Duration::from_secs(3)).await;
@@ -249,7 +249,7 @@ async fn reconfig_add_replica() {
 async fn reconfig_remove_non_leader() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let _leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -282,10 +282,10 @@ async fn reconfig_remove_non_leader() {
     // Write after reconfig — retry until the leader accepts with
     // the reduced quorum.
     assert!(
-        put_via_leader_retry(&cluster, b"rc-rm-2", b"val-2", 2, Duration::from_secs(5)).await,
+        put_via_leader_retry(&cluster, b"rc-rm-2", b"val-2", 2, Duration::from_secs(3)).await,
         "write after remove-replica should commit"
     );
-    poll_for_value(&cluster, b"rc-rm-2", b"val-2", Duration::from_secs(5)).await;
+    poll_for_value(&cluster, b"rc-rm-2", b"val-2", Duration::from_secs(3)).await;
 
     // Original data survives.
     poll_for_value(&cluster, b"rc-rm-1", b"val-1", Duration::from_secs(3)).await;

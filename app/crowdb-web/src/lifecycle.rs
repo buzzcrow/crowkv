@@ -459,16 +459,18 @@ pub async fn http_add_rack_node(
     state
         .prepare_node_workspace(entry.id.to_string())
         .map_err(|e| err_500(e.to_string()))?;
-    // Best-effort sysdata sync (non-blocking — config already committed).
-    if let Ok(ctx) = state.op_context().await {
-        let value = crowdb_protocol::common::NodeValue {
-            status: crowdb_protocol::common::HwStatus::Up as i32,
-            last_used_dg_id: 0,
-            disk_group_ids: Vec::new(),
-            status_changed_at_ms: 0,
-            temp_failure_since_ms: None,
-        };
-        let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+    // Avoid the full retry budget before bootstrap or during partial shutdown.
+    if has_fully_running_group0(&state) {
+        if let Ok(ctx) = state.op_context().await {
+            let value = crowdb_protocol::common::NodeValue {
+                status: crowdb_protocol::common::HwStatus::Up as i32,
+                last_used_dg_id: 0,
+                disk_group_ids: Vec::new(),
+                status_changed_at_ms: 0,
+                temp_failure_since_ms: None,
+            };
+            let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+        }
     }
     Ok((StatusCode::CREATED, Json(entry)))
 }

@@ -260,7 +260,7 @@ async fn commit_one_write(cluster: &WalCluster, key: &[u8], value: &[u8], seq: u
     let start = Instant::now();
     loop {
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            start.elapsed() < Duration::from_secs(3),
             "write should commit before timeout"
         );
         if let Some(leader) = cluster.elected_leader() {
@@ -317,7 +317,7 @@ fn wal_failed_flag(node: &WalNode) -> Arc<std::sync::atomic::AtomicBool> {
 async fn t1_1_kill_in_cas_persist_window_value_survives() {
     let mut cluster = start_wal_cluster(&[1, 2, 3]).await;
     let _initial_leader = cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -345,7 +345,7 @@ async fn t1_1_kill_in_cas_persist_window_value_survives() {
     // wait_for_leader (retry loop) instead of a one-shot elected_leader()
     // check, because the leader may be in a brief transition state.
     let leader_id = cluster
-        .wait_for_leader(Duration::from_secs(5))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("leader present after write");
 
@@ -358,11 +358,11 @@ async fn t1_1_kill_in_cas_persist_window_value_survives() {
     // Survivors re-elect and the value is readable — Paxos safety holds
     // even though the leader's local persist never completed.
     cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("surviving quorum re-elects a leader");
     assert_eq!(
-        read_until_leader_has(&cluster, key, Duration::from_secs(5))
+        read_until_leader_has(&cluster, key, Duration::from_secs(3))
             .await
             .as_deref(),
         Some(value.as_slice()),
@@ -374,13 +374,13 @@ async fn t1_1_kill_in_cas_persist_window_value_survives() {
     cluster.restart(leader_id, dead_wal_dir.clone()).await;
     assert_eq!(cluster.nodes.len(), 3, "killed replica restarted");
     cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("cluster has a leader after restart");
 
     // The restarted node catches up via the learner stream (ChosenNotice
     // from the new leader). The value is recovered without WAL replay.
-    let read = read_until_leader_has(&cluster, key, Duration::from_secs(10))
+    let read = read_until_leader_has(&cluster, key, Duration::from_secs(3))
         .await
         .expect("value readable after restart");
     assert_eq!(
@@ -425,7 +425,7 @@ async fn t1_1_kill_in_cas_persist_window_value_survives() {
 async fn t1_2_persist_failure_paxos_safe_and_repair_re_drives() {
     let cluster = start_wal_cluster(&[1, 2, 3]).await;
     let leader_id = cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -463,7 +463,7 @@ async fn t1_2_persist_failure_paxos_safe_and_repair_re_drives() {
     // Paxos safety: the value is readable through the leader (or a
     // survivor if the leader stepped down). The failed local persist
     // does not affect the chosen value.
-    let read = read_until_leader_has(&cluster, key, Duration::from_secs(5))
+    let read = read_until_leader_has(&cluster, key, Duration::from_secs(3))
         .await
         .expect("value readable after persist failure");
     assert_eq!(

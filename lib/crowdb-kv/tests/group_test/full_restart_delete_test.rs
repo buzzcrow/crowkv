@@ -244,7 +244,7 @@ impl WalCluster {
                 break;
             }
             assert!(
-                promote_start.elapsed() < Duration::from_secs(5),
+                promote_start.elapsed() < Duration::from_secs(3),
                 "lone replicas did not all self-promote within 5s"
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -271,7 +271,7 @@ impl WalCluster {
 
 async fn put(cluster: &WalCluster, key: &str, value: &str, seq: u64) {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
+    while start.elapsed() < Duration::from_secs(3) {
         if let Some(leader) = cluster.elected_leader() {
             let client = cluster.kv_client(leader);
             let resp = client
@@ -301,7 +301,7 @@ async fn put(cluster: &WalCluster, key: &str, value: &str, seq: u64) {
 
 async fn delete(cluster: &WalCluster, key: &str, seq: u64) {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
+    while start.elapsed() < Duration::from_secs(3) {
         if let Some(leader) = cluster.elected_leader() {
             let client = cluster.kv_client(leader);
             let resp = client
@@ -345,7 +345,7 @@ async fn wait_until_deleted_everywhere(cluster: &WalCluster, key: &str, timeout:
 async fn run_restart_delete_scenario(ids: &[u64], n: u64, deleted: &[u64]) {
     let mut cluster = start_wal_cluster(ids).await;
     cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("initial leader");
 
@@ -361,21 +361,21 @@ async fn run_restart_delete_scenario(ids: &[u64], n: u64, deleted: &[u64]) {
     // Every replica must reflect the deletes before we restart.
     for &i in deleted {
         assert!(
-            wait_until_deleted_everywhere(&cluster, &format!("k{i}"), Duration::from_secs(10)).await,
+            wait_until_deleted_everywhere(&cluster, &format!("k{i}"), Duration::from_secs(3)).await,
             "k{i} should be deleted on every replica before restart"
         );
     }
 
     cluster.restart_all().await;
     cluster
-        .wait_for_leader(Duration::from_secs(15))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("leader after full restart");
 
     // After full restart the deletes must NOT resurrect.
     for &i in deleted {
         let converged =
-            wait_until_deleted_everywhere(&cluster, &format!("k{i}"), Duration::from_secs(15)).await;
+            wait_until_deleted_everywhere(&cluster, &format!("k{i}"), Duration::from_secs(3)).await;
         let reads = cluster.read_local_everywhere(format!("k{i}").as_bytes()).await;
         assert!(
             converged,

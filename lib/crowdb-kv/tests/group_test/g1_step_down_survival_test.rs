@@ -56,7 +56,7 @@ async fn write_survives_forced_leader_step_down() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
     // 1. Wait for the initial leader and commit a write through it.
-    let leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
 
@@ -107,13 +107,13 @@ async fn write_survives_forced_leader_step_down() {
     // 3. The cluster must re-elect a leader (the surviving quorum) and the
     //    committed write must still be readable through it. The new leader
     //    recovers the slot via bulk Phase 1, so poll until it surfaces.
-    wait_for_leader(&cluster, Duration::from_secs(5))
+    wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("a leader is re-elected after step-down");
 
     let start = Instant::now();
     let mut recovered = None;
-    while start.elapsed() < Duration::from_secs(5) {
+    while start.elapsed() < Duration::from_secs(3) {
         if let Some(value) = read_via_leader(&cluster, b"g1").await {
             recovered = Some(value);
             break;

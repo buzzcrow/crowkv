@@ -19,9 +19,10 @@ import {
   deployNodeServer,
   clusterInit,
   waitForLeader,
-  createStore,
+  createStoreNoInit,
   addGroup,
 } from '../fixtures/consoleSetup';
+import { step } from '../fixtures/stepTimer';
 
 const DISKDB_RACK = 501;
 const DISKDB_NODE = 501;
@@ -424,7 +425,7 @@ test.describe('chunk · capacity · disk-group', () => {
     }
   });
 
-  test('assign disk-group to diskdb via UI (owner + bind); capacity non-zero when crowdb-rpc reachable', async ({ page, baseURL }) => {
+  test('assign disk-group to diskdb via UI (owner + bind) and reports non-zero capacity', async ({ page, baseURL }) => {
     test.setTimeout(60_000);
     const rackId = DISKDB_RACK;
     const nodeId = DISKDB_NODE;
@@ -436,7 +437,7 @@ test.describe('chunk · capacity · disk-group', () => {
 
     // Deploy diskdb via API (the UI deploy flow is tested in the next
     // test; here we just need a running instance for ownership assignment).
-    await apiDeployDiskdb(baseURL!, nodeId, rpcPort);
+    await step('capacity-assign: deploy diskdb', () => apiDeployDiskdb(baseURL!, nodeId, rpcPort));
 
     // Fetch the diskdb instance id (auto-generated, not the node id).
     let instanceId = '';
@@ -449,18 +450,15 @@ test.describe('chunk · capacity · disk-group', () => {
         // process registers asynchronously after startup.
         const rpcListenPort = rpcPort + 2;
         let ddb: { instance_id: string } | undefined;
-        for (let attempt = 0; attempt < 30; attempt++) {
+        await step('capacity-assign: wait for registration', () => expect.poll(async () => {
           const r = await api.get('/api/diskdb/instances');
-          if (r.ok()) {
-            const instances = await r.json();
-            ddb = (instances as { rpc_endpoint: string; instance_id: string }[]).find(
-              (i) => i.rpc_endpoint.includes(String(rpcListenPort)),
-            );
-            if (ddb) break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-        expect(ddb, 'diskdb instance should be registered').toBeTruthy();
+          if (!r.ok()) return false;
+          const instances = await r.json();
+          ddb = (instances as { rpc_endpoint: string; instance_id: string }[]).find(
+            (i) => i.rpc_endpoint.includes(String(rpcListenPort)),
+          );
+          return ddb !== undefined;
+        }, { timeout: 15_000, intervals: [100] }).toBe(true));
         instanceId = ddb!.instance_id;
       } finally {
         await api.dispose();
@@ -468,10 +466,12 @@ test.describe('chunk · capacity · disk-group', () => {
     }
 
     // Create a DG + disk, and a store + group for the bind target.
-    await apiAddDiskGroup(baseURL!, nodeId, dgId, 'test-dg-assign');
-    await addDisksBatch(baseURL!, nodeId, dgId, [{ disk_id: diskId }]);
-    await createStore(baseURL!, storeId, [nodeId]);
-    await addGroup(baseURL!, storeId, groupId, 1, [nodeId]);
+    await step('capacity-assign: create bind targets', async () => {
+      await apiAddDiskGroup(baseURL!, nodeId, dgId, 'test-dg-assign');
+      await addDisksBatch(baseURL!, nodeId, dgId, [{ disk_id: diskId }]);
+      await createStoreNoInit(baseURL!, storeId, [nodeId]);
+      await addGroup(baseURL!, storeId, groupId, 1, [nodeId]);
+    });
 
     try {
       // The disk-groups data arrives via fetchNodeDiskGroups (async, not
@@ -518,49 +518,39 @@ test.describe('chunk · capacity · disk-group', () => {
 
       // Submit the assignment.
       const assignBtn = assignDialog.getByRole('button', { name: /assign/i });
-      const assignResponse = page.waitForResponse((r: { url(): string }) =>
-        r.url().includes('/owner') || r.url().includes('/bind'));
+      const ownerResponse = page.waitForResponse((response) =>
+        response.request().method() === 'PUT' && response.url().endsWith('/owner'));
+      const bindResponse = page.waitForResponse((response) =>
+        response.request().method() === 'PUT' && response.url().endsWith('/bind'));
       await assignBtn.evaluate((el) => (el as HTMLElement).click());
-      await assignResponse;
+      const [owner, bind] = await Promise.all([ownerResponse, bindResponse]);
+      expect(owner.ok(), `owner request returned ${owner.status()}`).toBeTruthy();
+      expect(bind.ok(), `bind request returned ${bind.status()}`).toBeTruthy();
       await expect(assignDialog).toHaveCount(0, { timeout: 5_000 });
 
       // --- Verify capacity becomes non-zero via API ---
-      // The diskdb keepalive syncs every 10s, so poll until the DG
-      // appears in the usage response with capacity > 0. If the
-      // diskdb's crowdb-rpc endpoint is not reachable (transport error —
-      // common in the test environment where the diskdb process may
-      // not fully bind its crowdb-rpc port), the usage API returns an empty
-      // disk_groups list; in that case, verify the assign flow
-      // succeeded (owner + bind written to group-0) but skip the
-      // capacity-non-zero assertion.
+      // The diskdb keepalive syncs asynchronously, so poll until the DG
+      // appears in the usage response with capacity > 0.
       const api = await apiContext(baseURL!);
       try {
-        let usageReachable = false;
-        try {
-          await expect.poll(async () => {
+        await step('capacity-assign: wait for usage', () => expect.poll(async () => {
             const r = await api.get('/api/diskdb/usage');
             if (!r.ok()) return 0;
             const usage = await r.json();
             const dg = usage.disk_groups.find((g: { disk_group_id: number }) =>
               g.disk_group_id === dgId);
             return dg?.capacity_bytes ?? 0;
-          }, { timeout: 12_000, intervals: [500] }).toBeGreaterThan(0);
-          usageReachable = true;
-        } catch {
-          console.warn(`DG-${dgId} never reported usage — diskdb crowdb-rpc not reachable, skipping capacity-non-zero assertion`);
-        }
+          }, { timeout: 12_000, intervals: [100] }).toBeGreaterThan(0));
 
-        if (usageReachable) {
-          // --- Verify the capacity panel shows non-zero ---
-          const dgResponse2 = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
-          await page.goto('/');
-          await page.getByTestId('domain-chunk').click();
-          await dgResponse2;
-          await expect(aside.getByText(/DG-590/, { exact: true })).toBeVisible({ timeout: 10_000 });
-          // The Total Capacity card should show a non-zero value (not "0 B").
-          const capacityText = page.getByText(/Total Capacity/).locator('..');
-          await expect(capacityText.getByText(/0 B/)).toHaveCount(0, { timeout: 10_000 });
-        }
+        // --- Verify the capacity panel shows non-zero ---
+        const dgResponse2 = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
+        await page.goto('/');
+        await page.getByTestId('domain-chunk').click();
+        await dgResponse2;
+        await expect(aside.getByText(/DG-590/, { exact: true })).toBeVisible({ timeout: 10_000 });
+        // The Total Capacity card should show a non-zero value (not "0 B").
+        const capacityText = page.getByText(/Total Capacity/).locator('..');
+        await expect(capacityText.getByText(/0 B/)).toHaveCount(0, { timeout: 10_000 });
       } finally {
         await api.dispose();
       }

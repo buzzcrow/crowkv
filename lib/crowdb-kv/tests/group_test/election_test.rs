@@ -81,7 +81,7 @@ async fn wait_for_leader(cluster: &crate::common::cluster::TestCluster, timeout:
 async fn single_leader_elected_3_nodes() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("a leader should be elected within 5s");
 
@@ -135,7 +135,7 @@ async fn assert_single_leader_for_replica_count(n: u64) {
     let ids: Vec<u64> = (1..=n).collect();
     let cluster = start_cluster_no_leader(&ids).await;
 
-    let leader_id = wait_for_leader(&cluster, Duration::from_secs(10))
+    let leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .unwrap_or_else(|| panic!("a leader should be elected for {n}-replica cluster within 10s"));
 

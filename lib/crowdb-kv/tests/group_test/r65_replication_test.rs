@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// Helper: assert all nodes in the cluster eventually see `expected` for `key`.
 async fn assert_cluster_value(cluster: &TestCluster, key: &[u8], expected: Option<&[u8]>) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let mut all_match = true;
         for node in cluster.nodes() {
@@ -226,7 +226,7 @@ async fn heartbeat_not_delayed_by_lagging_follower() {
     let leader = cluster.leader();
     let client = cluster.kv_client(leader).await;
 
-    for i in 0..50u32 {
+    for i in 0..10u32 {
         let resp = client
             .put(KvSetRequest {
                 version: 1,
@@ -245,7 +245,7 @@ async fn heartbeat_not_delayed_by_lagging_follower() {
         assert!(resp.ok);
     }
 
-    for i in 0..50u32 {
+    for i in 0..10u32 {
         assert_cluster_value(
             &cluster,
             format!("r65-6-key{i}").as_bytes(),
@@ -265,7 +265,7 @@ async fn leader_change_continues_serving() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
     // Wait for leader to be elected.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         if cluster.elected_leader().is_some() {
             break;

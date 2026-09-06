@@ -317,7 +317,7 @@ async fn shutdown_persists_engine_snapshot() {
     assert_eq!(replica.contiguous_applied(), 10);
 
     // Graceful shutdown — should flush + persist_snapshot.
-    let report = replica.shutdown(Duration::from_secs(5)).await;
+    let report = replica.shutdown(Duration::from_secs(3)).await;
     assert!(
         report.is_clean(),
         "shutdown should be clean, got: {:?}",

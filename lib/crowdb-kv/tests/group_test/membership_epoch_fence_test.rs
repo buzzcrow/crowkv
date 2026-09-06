@@ -88,7 +88,7 @@ async fn get_via_leader(cluster: &TestCluster, key: &[u8]) -> Option<Vec<u8>> {
 async fn membership_epoch_mismatch_stalls_writes_until_fanout_completes() {
     let cluster = start_cluster_no_leader(&[1, 2, 3]).await;
 
-    let leader_id = wait_for_leader(&cluster, Duration::from_secs(5))
+    let leader_id = wait_for_leader(&cluster, Duration::from_secs(3))
         .await
         .expect("initial leader elected");
     let leader_node = cluster.elected_leader().expect("leader present");

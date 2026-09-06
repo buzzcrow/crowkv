@@ -175,6 +175,7 @@ TEST(Gc, NormalSnapshotDoesNotRelocateSparseBlocks)
     ASSERT_FALSE(tmp.path.empty());
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, 8 * 1024, 1, &store).ok());
+    store->set_sync_mode(SyncMode::kSkip);
     Options opt;
     opt.page_store                    = store.get();
     opt.merge_gc_block_free_threshold = 0.01;
@@ -257,6 +258,7 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
     constexpr uint64_t              blk = 8 * 1024;
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
+    store->set_sync_mode(SyncMode::kSkip);
     Options opt;
     opt.page_store                    = store.get();
     opt.leaf_split_bytes              = 256;
@@ -310,6 +312,7 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
     constexpr uint64_t              blk = 8 * 1024;
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
+    store->set_sync_mode(SyncMode::kSkip);
     Options opt;
     opt.page_store                    = store.get();
     opt.leaf_split_bytes              = 256;

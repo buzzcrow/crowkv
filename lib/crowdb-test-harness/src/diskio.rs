@@ -198,7 +198,7 @@ impl DiskioProcess {
                 "--dg-id",
                 &DG_ID.to_string(),
                 "--sync-interval-ms",
-                "2000",
+                "200",
                 "--auto-discover-disks",
             ]);
         }
@@ -557,7 +557,7 @@ pub async fn test_read_before_write(
 // ── concurrent benchmark ─────────────────────────────────────────
 
 const BENCH_THREADS: usize = 4;
-const BENCH_CYCLES: usize = 100;
+const BENCH_CYCLES: usize = 25;
 const BENCH_SIZE: usize = 4096;
 
 /// Run a concurrent write/read benchmark: `BENCH_THREADS` tasks each

@@ -57,7 +57,7 @@ async fn follower_get_forwards_to_leader_after_local_clear() {
     // R65: follower apply is driven by ChosenNotice (async). Poll until
     // the follower's engine has the value, with a bounded timeout.
     let follower_group = follower.get_group(1).expect("group 1 on follower");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         if follower_group
             .local_replica()

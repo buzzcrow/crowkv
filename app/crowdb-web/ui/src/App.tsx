@@ -252,10 +252,12 @@ function AppContent({ apiPrefix = '/api', readonly = false, modules, onEvent }: 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await Promise.all([refreshPhysical(), refreshLogical(), refreshCapacity()]);
+      const tasks: Promise<unknown>[] = [refreshPhysical(), refreshLogical(), refreshCapacity()];
       if (capacityActive || physicalActive) {
-        await Promise.all([fetchNodeDiskGroups(nodes.map((n) => n.id)), refreshAllServers()]);
+        tasks.push(fetchNodeDiskGroups(nodes.map((n) => n.id)));
       }
+      tasks.push(refreshAllServers());
+      await Promise.all(tasks);
       setLastRefreshTime(new Date());
     } finally {
       setRefreshing(false);

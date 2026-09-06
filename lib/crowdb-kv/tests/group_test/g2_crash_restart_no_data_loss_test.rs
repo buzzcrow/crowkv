@@ -267,7 +267,7 @@ async fn commit_writes(cluster: &WalCluster, kvs: &[(Vec<u8>, Vec<u8>)]) {
         let start = Instant::now();
         loop {
             assert!(
-                start.elapsed() < Duration::from_secs(10),
+                start.elapsed() < Duration::from_secs(3),
                 "write {i} should commit on the leader before timeout"
             );
             if let Some(leader) = cluster.elected_leader() {
@@ -314,7 +314,7 @@ async fn read_until_leader_has(cluster: &WalCluster, key: &[u8], timeout: Durati
 async fn assert_cluster_reads(cluster: &WalCluster, kvs: &[(Vec<u8>, Vec<u8>)], message: &str) {
     for (key, value) in kvs {
         assert_eq!(
-            read_until_leader_has(cluster, key, Duration::from_secs(5))
+            read_until_leader_has(cluster, key, Duration::from_secs(3))
                 .await
                 .as_deref(),
             Some(value.as_slice()),
@@ -395,7 +395,7 @@ async fn assert_offline_replay_has_values(node_id: u64, wal_dir: PathBuf, kvs: &
 async fn cluster_survives_leader_kill_and_restart_with_no_data_loss() {
     let mut cluster = start_wal_cluster(&[1, 2, 3]).await;
     let leader_id = cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("initial leader elected");
     let kvs = sample_kvs();
@@ -407,7 +407,7 @@ async fn cluster_survives_leader_kill_and_restart_with_no_data_loss() {
     assert_eq!(cluster.nodes.len(), 2, "two replicas survive the crash");
 
     let new_leader = cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("surviving quorum re-elects a leader");
     assert_ne!(new_leader, leader_id, "a survivor took over leadership");
@@ -417,7 +417,7 @@ async fn cluster_survives_leader_kill_and_restart_with_no_data_loss() {
     cluster.restart(leader_id, dead_wal_dir).await;
     assert_eq!(cluster.nodes.len(), 3, "killed replica restarted");
     cluster
-        .wait_for_leader(Duration::from_secs(10))
+        .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("cluster has a leader after restart");
     assert_cluster_reads(

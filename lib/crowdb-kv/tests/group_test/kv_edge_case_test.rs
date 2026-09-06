@@ -34,7 +34,7 @@ async fn put_raw(client: &mut TestKvClient, key: &[u8], val: &[u8], req_id: u64)
 async fn assert_cluster_value(cluster: &TestCluster, key: &[u8], expected: &[u8]) {
     // R65: follower apply is driven by ChosenNotice (async, after quorum
     // confirmation). Poll until all nodes converge, with a bounded timeout.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let mut all_match = true;
         for node in cluster.nodes() {

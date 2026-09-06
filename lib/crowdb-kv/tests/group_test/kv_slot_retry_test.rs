@@ -77,7 +77,7 @@ async fn kv_put_retries_next_slot_when_slot_has_prior_accepted_value() {
     }
     // R65: follower apply is driven by ChosenNotice (async). Poll until
     // all nodes have the value, with a bounded timeout.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let mut all_match = true;
         for node in cluster.nodes() {

@@ -3,7 +3,7 @@
 // Baseline: 4.7s (2026-08-16)
 
 import { test, expect } from '../fixtures/realBackend';
-import { apiContext, clusterInit, stopNodeServer, resetAll, waitForLeader, freePort } from '../fixtures/consoleSetup';
+import { apiContext, clusterInit, stopNodeServerAndReleasePorts, resetAll, waitForLeader, freePort } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
 
 /**
@@ -175,7 +175,7 @@ test.describe('flow · full chain', () => {
     } finally {
       // Stop the smoke server so it does not pollute the rest of the flow
       // (its bootstrap store 1 would otherwise aggregate into later views).
-      await step('full-chain: teardown smoke', () => stopNodeServer(baseURL!, 77));
+      await step('full-chain: teardown smoke', () => stopNodeServerAndReleasePorts(baseURL!, 77));
     }
 
     // --- full chain: fresh backend, two nodes, store 188 / group 1880 + added replica ---
@@ -273,7 +273,7 @@ test.describe('flow · full chain', () => {
       await page.getByTestId('domain-kv').click();
       await expect(page.getByRole('heading', { name: 'KV' })).toBeVisible({ timeout: 3_000 });
 
-      // 6. Create empty store 188 on n18a.
+      // 6. Create empty store 188 on both nodes.
       await step('full-chain: clusterInit (full)', () => clusterInit(baseURL!, [181, 182]));
       // Wait for group-0 leader election to settle before creating stores.
       // The election may take a few seconds to converge after init.
@@ -283,7 +283,14 @@ test.describe('flow · full chain', () => {
         await expect(page.getByRole('dialog', { name: 'Add KV Store' })).toBeVisible();
         await page.getByLabel('KV Store ID (numeric)').fill('188');
         await page.getByLabel(/^181\b/).check();
-        await page.getByRole('button', { name: /create kv store/i }).click();
+        await step('full-chain: submit store 188', async () => {
+          const storeResponse = page.waitForResponse((response) =>
+            response.request().method() === 'POST' && response.url().endsWith('/api/stores'));
+          await page.getByRole('button', { name: /create kv store/i }).click();
+          const response = await storeResponse;
+          expect(response.ok(), await response.text()).toBeTruthy();
+          expect(await response.json()).toMatchObject({ store_id: 188, nodes: [181, 182] });
+        });
         // Wait for the dialog to close AND S-188 to appear — the tree
         // poll may surface S-188 before the addStore API call returns
         // and the dialog closes, so checking only S-188 is racy.
@@ -338,8 +345,8 @@ test.describe('flow · full chain', () => {
     } finally {
       await api.dispose();
       await step('full-chain: teardown full', () => Promise.all([
-        stopNodeServer(baseURL!, 181),
-        stopNodeServer(baseURL!, 182),
+        stopNodeServerAndReleasePorts(baseURL!, 181),
+        stopNodeServerAndReleasePorts(baseURL!, 182),
       ]));
     }
   });

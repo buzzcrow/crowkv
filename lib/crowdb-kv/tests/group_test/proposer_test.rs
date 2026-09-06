@@ -118,7 +118,7 @@ async fn propose_queues_when_policy_is_queue() {
 
     // Release the permit — the queued propose should now complete.
     drop(held);
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
         .await
         .expect("propose should complete within 5s after permit release")
         .expect("task should not panic");
