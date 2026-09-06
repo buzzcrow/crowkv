@@ -23,6 +23,7 @@ use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Chunk;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
+use crowdb_protocol::diskdb::rpc::Segment;
 
 /// Spawn parity write + fsync tasks for a finished strip. Returns
 /// `JoinHandle`s without joining — caller joins at seal time.
@@ -52,7 +53,7 @@ pub fn spawn_parity_writes(
     let unit_bytes = u64::from(strip.unit_kb) * 1024;
     let data_num = ec_scheme.data_num;
 
-    let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
+    let mut writes: Vec<(Segment, bytes::Bytes)> = Vec::with_capacity(parity_shards.len());
 
     // Parallel parity write tasks (one per parity shard).
     for (i, shard) in parity_shards.into_iter().enumerate() {
@@ -61,26 +62,39 @@ pub fn spawn_parity_writes(
             .segments
             .get(seg_index)
             .ok_or_else(|| IoError::Internal(format!("segment {seg_index} missing")))?;
-        let data = bytes::Bytes::from(shard);
-        let dw = disk_writer.clone();
-        let ub = unit_bytes;
-        handles.push(tokio::spawn(async move { dw.write(&seg, ub, data).await }));
+        writes.push((seg, bytes::Bytes::from(shard)));
     }
 
     // Deduplicated fsync tasks (one per unique disk_id in the strip).
     let mut fsynced: HashSet<(u64, u64)> = HashSet::new();
+    let mut disk_ids = Vec::new();
     for seg in &ec.segments {
         if let Some(did) = seg.disk_id.as_ref() {
             if fsynced.insert((did.high, did.low)) {
-                let did_clone = *did;
-                let dw = disk_writer.clone();
-                handles.push(tokio::spawn(async move {
-                    let id = DiskId::new(did_clone.high, did_clone.low);
-                    dw.fsync(id).await
-                }));
+                disk_ids.push(DiskId::new(did.high, did.low));
             }
         }
     }
 
-    Ok(handles)
+    let dw = disk_writer.clone();
+    Ok(vec![tokio::spawn(async move {
+        let mut write_tasks = tokio::task::JoinSet::new();
+        for (seg, data) in writes {
+            let dw = dw.clone();
+            write_tasks.spawn(async move { dw.write(&seg, unit_bytes, data).await });
+        }
+        while let Some(result) = write_tasks.join_next().await {
+            result.map_err(|e| IoError::Internal(format!("parity write task failed: {e}")))??;
+        }
+
+        let mut fsync_tasks = tokio::task::JoinSet::new();
+        for disk_id in disk_ids {
+            let dw = dw.clone();
+            fsync_tasks.spawn(async move { dw.fsync(disk_id).await });
+        }
+        while let Some(result) = fsync_tasks.join_next().await {
+            result.map_err(|e| IoError::Internal(format!("fsync task failed: {e}")))??;
+        }
+        Ok(())
+    })])
 }

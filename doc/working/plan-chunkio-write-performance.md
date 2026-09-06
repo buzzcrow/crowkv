@@ -11,10 +11,10 @@ refine it through a three-node `NullDisk` benchmark.
 
 ## Review and Correctness
 
-- [~] **Diagnose simple write**: reproduce the isolated E2E test and locate the
+- [x] **Diagnose simple write**: reproduce the isolated E2E test and locate the
   first pending operation. Files: `lib/crowdb-chunk-client/tests/`,
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-test-harness/`.
-- [ ] **Correct completion ordering**: sequence fsync after data/parity writes
+- [x] **Correct completion ordering**: sequence fsync after data/parity writes
   and add focused tests. Files: `lib/crowdb-chunk-client/src/chunk/`,
   `lib/crowdb-chunk-client/tests/`.
 - [ ] **Add public client API**: own discovery, routing, preparation, execution,

@@ -21,12 +21,12 @@ local CI sweep.
 
 ## Chunk-Client Write Follow-Up
 
-- [~] **Diagnose write stall**: trace `write_stream` from the first pending
+- [x] **Diagnose write stall**: trace `write_stream` from the first pending
   operation through chunk allocation and DiskIO completion, identify the first
   divergence, and fix the underlying error. Files:
   `lib/crowdb-chunk-client/`, `lib/crowdb-diskio-client/`,
   `lib/crowdb-common/cpp/`, and the relevant service path.
-- [ ] **Verify large-object writes**: pass
+- [x] **Verify large-object writes**: pass
   `e2e_case1_single_chunk_multi_strip` and `e2e_case2_chunk_rotation`. Files:
   `lib/crowdb-chunk-client/tests/large_object_writer_e2e.rs`.
 - [ ] **Finish local CI**: pass `pixi run test-chunk-client`, then run every
@@ -73,3 +73,12 @@ DiskIOUring::submit_write: fd not registered, routing to pipeline 0
 No panic or service error was logged in the recorded attempts. Start at the
 first pending `write_stream` operation and treat the DiskIO routing warning as
 evidence to verify, not as the assumed root cause.
+
+## Resolution
+
+The first pending operation was `allocate_chunk`. The one-rack fixture requested
+EC 4+1 while ChunkDB correctly rejected unsafe EC placement; the failed request
+did not advance the writer. The fixture now opts into unsafe EC explicitly,
+without changing the production default. Both isolated large-object cases pass,
+including multi-strip writing and chunk rotation. R135 also adds a regression
+test that prevents fsync from racing ahead of a delayed parity write.

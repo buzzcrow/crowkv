@@ -96,6 +96,11 @@ impl ChunkdbProcess {
     /// Start crowdb-chunkdb with a generated config pointing at the
     /// kv-server management seeds.
     pub fn start(kv_seeds: &[String]) -> Self {
+        Self::start_with_unsafe_ec(kv_seeds, false)
+    }
+
+    /// Start crowdb-chunkdb and optionally permit single-rack EC placement.
+    pub fn start_with_unsafe_ec(kv_seeds: &[String], allow_unsafe_ec: bool) -> Self {
         let bin = crowdb_chunkdb_bin().unwrap_or_else(|| {
             panic!("crowdb-chunkdb binary not found; set CROWDB_CHUNKDB_BIN or build app/crowdb-chunkdb")
         });
@@ -125,6 +130,9 @@ refresh_interval_secs = 2
 
 [range_guard]
 allow_all_when_empty = true
+
+[placement]
+allow_unsafe_ec = {allow_unsafe_ec}
 
 [lifecycle]
 cache_capacity = 1000

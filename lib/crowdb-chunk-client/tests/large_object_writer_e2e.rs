@@ -128,7 +128,7 @@ async fn start_e2e_stack() -> E2eStack {
 
     // 5. Start chunkdb (chunk manager).
     eprintln!("=== starting crowdb-chunkdb ===");
-    let chunkdb = ChunkdbProcess::start(&cluster.mgmt_endpoints);
+    let chunkdb = ChunkdbProcess::start_with_unsafe_ec(&cluster.mgmt_endpoints, true);
     chunkdb.wait_for_ready().await;
     eprintln!("crowdb-chunkdb ready");
 
