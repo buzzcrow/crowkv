@@ -351,6 +351,7 @@ impl ChunkWriter {
     /// parity write/fsync handles (joined at `seal` time, not here —
     /// strip N+1's data writes overlap with strip N's parity writes).
     pub async fn finish_strip(&mut self) -> Result<StripResult> {
+        self.await_parity_capacity().await?;
         let mut strip = self
             .current_strip
             .take()
@@ -360,6 +361,17 @@ impl ChunkWriter {
         // Collect parity handles for seal-time join.
         self.parity_handles.append(&mut strip_result.parity_handles);
         Ok(strip_result)
+    }
+
+    async fn await_parity_capacity(&mut self) -> Result<()> {
+        let depth = self.config.parity_depth.max(1);
+        while self.parity_handles.len() >= depth {
+            let handle = self.parity_handles.remove(0);
+            handle
+                .await
+                .map_err(|error| IoError::Internal(format!("parity task panicked: {error}")))??;
+        }
+        Ok(())
     }
 
     /// Is the current strip full (all data_num blocks written)?
@@ -474,9 +486,11 @@ impl ChunkWriter {
         if let Some(mut strip) = self.current_strip.take() {
             let _ = strip.abort().await;
         }
-        // Drop in-flight parity handles (abort_all semantics — tasks
-        // continue but we ignore their results; the chunk is deleted).
-        self.parity_handles.clear();
+        // Submitted DiskIO RPCs are not cancellable. Drain finalization before
+        // freeing segments so a late parity write cannot hit reused storage.
+        for handle in self.parity_handles.drain(..) {
+            let _ = handle.await;
+        }
         // Delete the chunk if it was opened and has any data — either
         // finished strips (bytes_in_chunk > 0), an in-progress strip
         // (had_strip), or prior finished strips (write_cursor > 0).

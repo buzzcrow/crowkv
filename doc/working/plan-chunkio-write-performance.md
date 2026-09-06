@@ -40,7 +40,7 @@ refine it through a three-node `NullDisk` benchmark.
 - [x] **Remove payload copy**: preserve owned payload through DiskIO RPC
   completion. Files: `lib/crowdb-diskio-client/src/`,
   `lib/crowdb-chunk-client/src/disk_io/`.
-- [ ] **Refine critical path**: measure and apply bounded write/EC/finalization
+- [x] **Refine critical path**: measure and apply bounded write/EC/finalization
   overlap while preserving memory and ordering. Files:
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-chunk-client/tests/`.
 - [x] **Add library benchmark runner**: implement bounded deterministic large
@@ -52,7 +52,7 @@ refine it through a three-node `NullDisk` benchmark.
 
 ## Documentation and Gates
 
-- [ ] **Run affected tests**: unit, simple E2E, distributed E2E, CLI integration,
+- [x] **Run affected tests**: unit, simple E2E, distributed E2E, CLI integration,
   and sentinel separately through Pixi.
 - [ ] **Fold design**: update permanent chunk IO and DiskIO designs and remove
   temporary artifacts and R135.

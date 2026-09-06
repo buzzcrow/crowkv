@@ -26,9 +26,7 @@ pub struct ChunkClientConfig {
     pub max_chunk_size: u64,
     /// Strips allocated ahead of the write cursor. Default 2.
     pub prealloc_depth: usize,
-    /// Parity tasks in flight (legacy field — per-strip ParityBatch
-    /// no longer uses a semaphore; kept for footprint calc + future
-    /// cross-strip bounding). Default 2.
+    /// Maximum completed-strip parity/finalization tasks in flight. Default 2.
     pub parity_depth: usize,
     /// Chunks allocated ahead. Default 1.
     pub chunk_prefetch_depth: usize,

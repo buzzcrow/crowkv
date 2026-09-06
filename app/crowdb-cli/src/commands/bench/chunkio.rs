@@ -86,9 +86,12 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
         }
     } else {
         println!(
-            "chunkio write: objects={} errors={} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
+            "chunkio write: requested={} objects={} errors={} incomplete={} stop={} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
+            result.requested_objects,
             result.objects,
             result.errors,
+            result.incomplete_objects,
+            result.stop_reason,
             result.logical_mib_per_sec,
             result.physical_mib_per_sec,
             result.latency_p50_us,
@@ -97,7 +100,7 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             result.preparation_stall_us,
         );
     }
-    if result.errors == 0 {
+    if result.errors == 0 && result.incomplete_objects == 0 {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

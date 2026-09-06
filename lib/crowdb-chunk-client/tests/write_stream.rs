@@ -958,6 +958,8 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
 
     assert_eq!(result.objects, 2);
     assert_eq!(result.errors, 0);
+    assert_eq!(result.incomplete_objects, 0);
+    assert_eq!(result.stop_reason, "complete");
     assert_eq!(result.logical_bytes, 8 * UNIT_BYTES);
     assert_eq!(result.physical_bytes, 10 * UNIT_BYTES);
     assert!(result.objects_per_sec > 0.0);

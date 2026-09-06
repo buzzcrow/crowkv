@@ -27,8 +27,11 @@ pub struct LargeWriteBenchmarkConfig {
 #[derive(Debug, Clone, Serialize)]
 pub struct LargeWriteBenchmarkResult {
     pub elapsed_secs: f64,
+    pub requested_objects: u64,
     pub objects: u64,
     pub errors: u64,
+    pub incomplete_objects: u64,
+    pub stop_reason: String,
     pub logical_bytes: u64,
     pub physical_bytes: u64,
     pub logical_mib_per_sec: f64,
@@ -49,7 +52,8 @@ struct WorkerResult {
     preparation_stalls: u64,
     preparation_stall_us: u64,
     latencies: Vec<u64>,
-    errors: Vec<String>,
+    errors: u64,
+    error_messages: Vec<String>,
 }
 
 /// Run concurrent deterministic large writes without allocating an
@@ -61,25 +65,41 @@ pub async fn run_large_write_benchmark(
     let started = Instant::now();
     let next_object = Arc::new(AtomicU64::new(0));
     let mut tasks = JoinSet::new();
-    for worker in 0..config.concurrency.max(1) {
+    for _ in 0..config.concurrency.max(1) {
         let client = client.clone();
         let config = config.clone();
         let next_object = next_object.clone();
-        tasks.spawn(async move { run_worker(client, config, next_object, worker).await });
+        tasks.spawn(async move { run_worker(client, config, next_object).await });
     }
     let mut total = WorkerResult::default();
     while let Some(result) = tasks.join_next().await {
         match result {
             Ok(worker) => merge_worker(&mut total, worker),
-            Err(error) => total.errors.push(format!("benchmark worker failed: {error}")),
+            Err(error) => {
+                total.errors += 1;
+                record_error(
+                    &mut total.error_messages,
+                    format!("benchmark worker failed: {error}"),
+                );
+            }
         }
     }
     total.latencies.sort_unstable();
     let elapsed_secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    let accounted = total.objects.saturating_add(total.errors);
+    let incomplete_objects = config.object_count.saturating_sub(accounted);
+    let stop_reason = if total.errors == 0 && incomplete_objects == 0 {
+        "complete"
+    } else {
+        "failed"
+    };
     LargeWriteBenchmarkResult {
         elapsed_secs,
+        requested_objects: config.object_count,
         objects: total.objects,
-        errors: total.errors.len() as u64,
+        errors: total.errors,
+        incomplete_objects,
+        stop_reason: stop_reason.into(),
         logical_bytes: total.logical_bytes,
         physical_bytes: total.physical_bytes,
         logical_mib_per_sec: total.logical_bytes as f64 / 1_048_576.0 / elapsed_secs,
@@ -89,7 +109,7 @@ pub async fn run_large_write_benchmark(
         latency_p99_us: percentile(&total.latencies, 99),
         preparation_stalls: total.preparation_stalls,
         preparation_stall_us: total.preparation_stall_us,
-        error_messages: total.errors,
+        error_messages: total.error_messages,
     }
 }
 
@@ -97,7 +117,6 @@ async fn run_worker(
     client: ChunkIoClient,
     config: LargeWriteBenchmarkConfig,
     next_object: Arc<AtomicU64>,
-    worker: usize,
 ) -> WorkerResult {
     let mut result = WorkerResult::default();
     loop {
@@ -105,7 +124,7 @@ async fn run_worker(
         if object >= config.object_count {
             break;
         }
-        let byte = config.seed.wrapping_add(worker as u8).wrapping_add(object as u8);
+        let byte = config.seed.wrapping_add(object as u8);
         let source = tokio::io::repeat(byte).take(config.object_size);
         let started = Instant::now();
         match client
@@ -124,7 +143,10 @@ async fn run_worker(
                     .latencies
                     .push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
             }
-            Err(error) => result.errors.push(format!("object {object}: {error}")),
+            Err(error) => {
+                result.errors += 1;
+                record_error(&mut result.error_messages, format!("object {object}: {error}"));
+            }
         }
     }
     result
@@ -137,7 +159,17 @@ fn merge_worker(total: &mut WorkerResult, worker: WorkerResult) {
     total.preparation_stalls += worker.preparation_stalls;
     total.preparation_stall_us += worker.preparation_stall_us;
     total.latencies.extend(worker.latencies);
-    total.errors.extend(worker.errors);
+    total.errors += worker.errors;
+    for message in worker.error_messages {
+        record_error(&mut total.error_messages, message);
+    }
+}
+
+fn record_error(messages: &mut Vec<String>, message: String) {
+    const MAX_ERROR_MESSAGES: usize = 16;
+    if messages.len() < MAX_ERROR_MESSAGES {
+        messages.push(message);
+    }
 }
 
 fn percentile(sorted: &[u64], percentile: usize) -> u64 {

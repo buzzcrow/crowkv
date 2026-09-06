@@ -9,7 +9,7 @@
 //! `clean` removes orphaned sysdata entries without touching running
 //! servers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crowdb_kv_client::RangeBindingClient;
@@ -685,6 +685,7 @@ async fn local_deploy_diskio(
                 field: "port_alloc".into(),
                 message: error.to_string(),
             })?;
+    let mut expected_owners = HashMap::with_capacity(nodes.len());
 
     for (index, node) in nodes.iter().enumerate() {
         let server_id = format!("diskio-{}", node.id);
@@ -707,6 +708,7 @@ async fn local_deploy_diskio(
             &node_dir,
         )
         .await?;
+        expected_owners.insert(30_000 + node.id, (deployed.endpoint.clone(), node.id * 100 + 1));
         ctx.config_mut().add_server(ServerEntry {
             id: server_id,
             url: deployed.endpoint.clone(),
@@ -723,26 +725,38 @@ async fn local_deploy_diskio(
             no_fsync: false,
         })?;
     }
-    wait_for_diskio_registration(ctx, nodes.len()).await?;
+    wait_for_diskio_registration(ctx, &expected_owners).await?;
     Ok(nodes.len())
 }
 
-async fn wait_for_diskio_registration(ctx: &OpContext, expected: usize) -> Result<()> {
+async fn wait_for_diskio_registration(ctx: &OpContext, expected: &HashMap<u64, (String, u64)>) -> Result<()> {
     let discovery = ctx.discovery_or_error()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         discovery.invalidate(Some("diskio"));
-        if discovery
-            .discover_all("diskio")
-            .await
-            .is_ok_and(|instances| instances.len() >= expected)
-        {
+        if discovery.discover_all("diskio").await.is_ok_and(|instances| {
+            instances.len() == expected.len()
+                && instances.into_iter().all(|(_, instance)| {
+                    expected
+                        .get(&instance.instance_id)
+                        .is_some_and(|(endpoint, dg_id)| {
+                            instance.rpc_endpoint == endpoint.strip_prefix("http://").unwrap_or(endpoint)
+                                && instance
+                                    .extra
+                                    .and_then(|extra| extra.diskdb)
+                                    .is_some_and(|diskio| diskio.owned_dg_ids == [*dg_id])
+                        })
+                })
+        }) {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
             return Err(Error::UpstreamRpc {
                 node_id: "group0-service-registry".into(),
-                status: format!("expected {expected} living DiskIO instances before timeout"),
+                status: format!(
+                    "expected {} exact living DiskIO ownership registrations before timeout",
+                    expected.len()
+                ),
             });
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;

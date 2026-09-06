@@ -292,6 +292,9 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                         ExitCode::SUCCESS
                     }
                     Err(error) => {
+                        if let Err(code) = commit_config(cli, &ctx) {
+                            return code;
+                        }
                         eprintln!("error: local-deploy combined: {error}");
                         ExitCode::from(2)
                     }

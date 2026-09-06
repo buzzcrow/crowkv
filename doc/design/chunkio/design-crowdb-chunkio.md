@@ -28,6 +28,8 @@ model, and the design choices that make a 1 TB upload cost the same
 - [7. Completion and Error Handling](#7-completion-and-error-handling)
 - [8. Interaction with Neighbors](#8-interaction-with-neighbors)
 - [9. Tunables and Defaults](#9-tunables-and-defaults)
+- [10. Application API and Routing](#10-application-api-and-routing)
+- [11. Performance Workload](#11-performance-workload)
 
 ## 1. Non-Goals
 
@@ -44,8 +46,9 @@ model, and the design choices that make a 1 TB upload cost the same
 - **No GC of leaked partial chunks.** Best-effort cleanup on abort
   leaves Active chunks for a future reaper; this doc does not specify
   the reaper.
-- **No server-side changes.** The writer is a client library; chunkdb,
-  diskio, and kv-server binaries are unchanged by this design.
+- **No object protocol server.** Applications call the client library
+  directly. An S3-compatible or other object protocol server can use the same
+  API later without owning chunk placement or DiskIO routing.
 
 ## 2. Key Design Decisions
 
@@ -303,7 +306,7 @@ must return already-sealed `ProtoLocation`s for caller cleanup.
   parity handles, `seal_chunk` RPC, return `ProtoLocation`. If the
   chunk is empty (0 bytes written), `delete_chunk` instead of
   `seal_chunk`.
-- **Error / abort** (`on_error` or `Drop`) — cancel in-flight pipeline
+- **Error / abort** (`on_error`) — cancel in-flight pipeline
   tasks, `ChunkWriter::abort()`: stop strip prefetch, abort current
   strip, drop parity handles, `delete_chunk` on the partial chunk,
   return `ProtoLocation`s of already-sealed chunks.
@@ -313,8 +316,10 @@ must return already-sealed `ProtoLocation`s for caller cleanup.
   segments. Up to 3 retries; on exhaustion, `IoError::WriteFailed` with
   the partial `ProtoLocation` array. The abort/cleanup paths are
   integration points for future single-block replacement.
-- **`Drop`** — calls abort as a safety net if the caller drops the
-  writer without `on_finish` / `on_error`.
+- **Dropped writer** — dropping does not perform async metadata cleanup.
+  Applications call `on_error` when abandoning a started push-mode write;
+  an Active partial chunk left by process loss remains for future lifecycle
+  GC.
 
 Edge cases:
 
@@ -334,9 +339,10 @@ Edge cases:
   placement and lifecycle; the writer is unaware of internal placement
   logic — it receives `Segment` placements and writes to them.
 - **diskio** — the writer writes data + parity blocks via
-  `BlockWriter::write` and flushes via `BlockWriter::fsync`.
-  `DiskioBlockWriter` wraps `DiskioClient` + `RpcServer` +
-  `Connection`.
+  `DiskWriter::write` and flushes via `DiskWriter::fsync`.
+  `RoutedDiskWriter` owns discovery and routes every segment by disk ID to the
+  unique live DiskIO owner. The fixed-connection `DiskioBlockWriter` remains a
+  low-level adapter for focused fixtures.
 - **crowdb-common EC** — `encode_parity_from_shards` is the shard-based +
   partial-encode entry point used by parity tasks.
 - **crowdb-protocol** — `ChunkId`, `*ChunkRequest` types, `Segment`,
@@ -354,4 +360,37 @@ Edge cases:
 | `max_cached_buffer` | 4 MB | Un-written data budget in fetch channel (one strip). |
 | `memory_budget` | (pool) | `WriterPool` total; `max_concurrent = budget / per-writer-footprint`. |
 
-The writer is a client library — no server-side config changes.
+## 10. Application API and Routing
+
+`ChunkIoClient` is the application boundary. `connect` takes management seeds
+and discovers ChunkDB endpoints, DiskIO registrations, hardware disks, and disk
+group ownership. `prepare_large_write` starts bounded chunk preparation when
+the object size and `LargeWritePolicy` become known. The single-use
+`PreparedLargeWrite::write_stream` consumes an `AsyncRead` and returns
+`LargeWriteResult` with locations, logical and EC-expanded physical bytes,
+chunk and strip counts, elapsed time, and preparation stalls.
+
+The write hot path reads an immutable disk-ID route snapshot through
+`ArcSwap`. Refresh constructs a complete replacement off-path and publishes it
+atomically. Missing ownership and duplicate owners are topology errors; the
+client never chooses an arbitrary DiskIO endpoint. Connections are reused per
+endpoint. The application and CLI do not construct allocators, RPC servers,
+connections, chunks, strips, or parity workers.
+
+## 11. Performance Workload
+
+`run_large_write_benchmark` is a library-owned, deterministic, bounded-source
+workload. It runs an object-count target with bounded concurrency and returns
+application-independent aggregate throughput, latency, error, and preparation
+stall fields. `crowdb-cli bench chunkio write` only maps arguments, starts the
+standard process metrics collector, and formats the result.
+
+The regression fixture starts three co-located logical nodes: three KV
+servers, three DiskDB, three ChunkDB, and three DiskIO processes backed by
+`NullDisk`. A 4+1 strip on three racks requires the local-test-only unsafe EC
+placement option; disk ownership and routing remain strict. The retained logs
+contain `bw_mib` when host PMU counters are available. This is observed host
+memory traffic during the workload, not physical DIMM peak bandwidth and not
+an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel
+copies, EC calculation, fsync, and metadata work all keep end-to-end logical
+throughput below that hardware envelope.

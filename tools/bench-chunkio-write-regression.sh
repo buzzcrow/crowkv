@@ -17,6 +17,7 @@ LOG_ROOT="${CHUNKIO_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-write-regression-$R
 RESULTS_FILE="${CHUNKIO_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 CURRENT_CONFIG=""
 CURRENT_LOG_ROOT=""
+BENCH_LOG_DIR=""
 FAILURES=0
 
 if ! [[ "$TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
@@ -45,7 +46,7 @@ field() {
 
 memory_bandwidth() {
     local mode="$1"
-    find "$CURRENT_LOG_ROOT" -type f -name '*metrics-*.log' -print0 |
+    find "$BENCH_LOG_DIR" -type f -name 'crowdb-cli-metrics-*.log' -print0 |
         xargs -0 sed -n 's/.*bw_mib=\([0-9.]*\).*/\1/p' |
         awk -v mode="$mode" '
             NR == 1 { max = $1 }
@@ -64,8 +65,8 @@ verify_logs() {
     chunkdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-chunkdb-metrics-*.log' | wc -l)
     diskio=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskio-metrics-*.log' | wc -l)
     cli_metrics=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-cli-metrics-*.log' | wc -l)
-    [ "$kv" -ge 3 ] && [ "$diskdb" -ge 3 ] && [ "$chunkdb" -ge 3 ] \
-        && [ "$diskio" -ge 3 ] && [ "$cli_metrics" -ge 1 ]
+    [ "$kv" -eq 3 ] && [ "$diskdb" -eq 3 ] && [ "$chunkdb" -eq 3 ] \
+        && [ "$diskio" -eq 3 ] && [ "$cli_metrics" -eq 1 ]
 }
 
 run_case() {
@@ -73,10 +74,21 @@ run_case() {
     if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
         return
     fi
-    CURRENT_LOG_ROOT="$LOG_ROOT/$label"
+    CURRENT_LOG_ROOT="$LOG_ROOT/$label-$RUN_STAMP"
     CURRENT_CONFIG="$CURRENT_LOG_ROOT/console.toml"
     echo ">>> $label (objects=$objects size=$object_size concurrency=$concurrency EC=4+1)"
+    set +e
     cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
+    local deploy_status=$?
+    set -e
+    if [ "$deploy_status" -ne 0 ]; then
+        printf '%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\tunsupported\tunsupported\n' \
+            "$label" "$objects" "$object_size" "$concurrency" "$objects" >>"$RESULTS_FILE"
+        echo "ERROR: deployment failed for $label (exit=$deploy_status)" >&2
+        FAILURES=$((FAILURES + 1))
+        destroy_cluster
+        return 0
+    fi
 
     local output status line avg_bw max_bw
     set +e
@@ -89,21 +101,42 @@ run_case() {
     status=$?
     set -e
     printf '%s\n' "$output"
+    BENCH_LOG_DIR=$(sed -n 's/^log dir: //p' <<<"$output" | tail -n 1)
     line=$(sed -n '/^chunkio write:/p' <<<"$output" | tail -n 1)
-    avg_bw=$(memory_bandwidth avg)
-    max_bw=$(memory_bandwidth max)
-    if [ -z "$line" ]; then
-        printf '%s\t%s\t%s\t%s\t0\t1\t0\t0\t0\t0\t%s\t%s\n' \
-            "$label" "$objects" "$object_size" "$concurrency" "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
+    if [ -n "$BENCH_LOG_DIR" ] && [ -d "$BENCH_LOG_DIR" ]; then
+        avg_bw=$(memory_bandwidth avg)
+        max_bw=$(memory_bandwidth max)
     else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        avg_bw=unsupported
+        max_bw=unsupported
+    fi
+    if [ -z "$line" ]; then
+        printf '%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t%s\t%s\n' \
+            "$label" "$objects" "$object_size" "$concurrency" "$objects" "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
+    else
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$label" "$objects" "$object_size" "$concurrency" \
             "$(field "$line" objects)" "$(field "$line" errors)" \
+            "$(field "$line" incomplete)" "$(field "$line" stop)" \
             "$(field "$line" logical_mib_s)" "$(field "$line" physical_mib_s)" \
             "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
             "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
     fi
-    if [ "$status" -ne 0 ] || ! verify_logs; then
+    local completed errors incomplete stop logical physical p50 p99 valid=1
+    completed=$(field "$line" objects)
+    errors=$(field "$line" errors)
+    incomplete=$(field "$line" incomplete)
+    stop=$(field "$line" stop)
+    logical=$(field "$line" logical_mib_s)
+    physical=$(field "$line" physical_mib_s)
+    p50=$(field "$line" p50_us)
+    p99=$(field "$line" p99_us)
+    if [ -z "$line" ] || [ "$completed" != "$objects" ] || [ "$errors" != 0 ] \
+        || [ "$incomplete" != 0 ] || [ "$stop" != complete ] \
+        || [ -z "$logical" ] || [ -z "$physical" ] || [ -z "$p50" ] || [ -z "$p99" ]; then
+        valid=0
+    fi
+    if [ "$status" -ne 0 ] || [ "$valid" -ne 1 ] || ! verify_logs; then
         echo "ERROR: $label failed or did not retain all service metrics" >&2
         FAILURES=$((FAILURES + 1))
     fi
@@ -114,7 +147,7 @@ echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 pixi run build-cpp
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
-printf 'case\trequested\tsize_bytes\tconcurrency\tcompleted\terrors\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
+printf 'case\trequested\tsize_bytes\tconcurrency\tcompleted\terrors\tincomplete\tstop\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
 
 run_case large_1t 2 67108864 1
 run_case large_4t 8 67108864 4

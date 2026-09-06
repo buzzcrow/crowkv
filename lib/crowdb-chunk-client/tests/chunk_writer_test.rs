@@ -13,6 +13,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crowdb_test_harness::test_dirs;
@@ -39,11 +40,21 @@ const DATA_NUM: usize = 4;
 #[derive(Debug, Default)]
 struct OrderingDiskWriter {
     events: Mutex<Vec<String>>,
+    parity_inflight: AtomicUsize,
+    parity_max: AtomicUsize,
 }
 
 impl OrderingDiskWriter {
     fn events(&self) -> Vec<String> {
         self.events.lock().unwrap().clone()
+    }
+
+    fn parity_max(&self) -> usize {
+        self.parity_max.load(Ordering::Relaxed)
+    }
+
+    fn parity_inflight(&self) -> usize {
+        self.parity_inflight.load(Ordering::Relaxed)
     }
 }
 
@@ -52,7 +63,10 @@ impl DiskWriter for OrderingDiskWriter {
     async fn write(&self, seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
         let disk_id = seg.disk_id.unwrap_or_default();
         if disk_id.high == 1004 {
+            let inflight = self.parity_inflight.fetch_add(1, Ordering::Relaxed) + 1;
+            self.parity_max.fetch_max(inflight, Ordering::Relaxed);
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            self.parity_inflight.fetch_sub(1, Ordering::Relaxed);
         }
         self.events
             .lock()
@@ -459,4 +473,57 @@ async fn chunk_writer_waits_for_parity_before_fsync() {
         .position(|event| event.starts_with("fsync:"))
         .unwrap();
     assert!(parity < first_fsync, "events = {events:?}");
+}
+
+#[tokio::test]
+async fn chunk_writer_bounds_cross_strip_parity_tasks() {
+    let chunkdb = MockChunkAllocator::new();
+    let diskio = Arc::new(OrderingDiskWriter::default());
+    let ec = ec_4_1();
+    let mut config = (*test_config(1024 * 1024 * 1024)).clone();
+    config.parity_depth = 1;
+    let mut cw = ChunkWriter::new(Arc::new(chunkdb.clone()), diskio.clone(), ec, Arc::new(config));
+    let pf = crowdb_chunk_client::ChunkPrefetch::new(
+        Arc::new(chunkdb),
+        ec,
+        test_config(1024 * 1024 * 1024),
+        crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+    );
+    cw.open(pf.on_demand().await.unwrap(), None).unwrap();
+
+    for i in 0..(DATA_NUM * 3) as u8 {
+        cw.push(block(i, UNIT_BYTES as usize)).await.unwrap();
+    }
+    cw.seal().await.unwrap();
+
+    assert_eq!(diskio.parity_max(), 1);
+}
+
+#[tokio::test]
+async fn chunk_writer_abort_drains_submitted_parity_io() {
+    let chunkdb = MockChunkAllocator::new();
+    let diskio = Arc::new(OrderingDiskWriter::default());
+    let ec = ec_4_1();
+    let mut cw = ChunkWriter::new(
+        Arc::new(chunkdb.clone()),
+        diskio.clone(),
+        ec,
+        test_config(1024 * 1024 * 1024),
+    );
+    let pf = crowdb_chunk_client::ChunkPrefetch::new(
+        Arc::new(chunkdb.clone()),
+        ec,
+        test_config(1024 * 1024 * 1024),
+        crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+    );
+    cw.open(pf.on_demand().await.unwrap(), None).unwrap();
+    for i in 0..=DATA_NUM as u8 {
+        cw.push(block(i, UNIT_BYTES as usize)).await.unwrap();
+    }
+
+    cw.abort().await.unwrap();
+
+    assert_eq!(diskio.parity_inflight(), 0);
+    assert!(diskio.events().iter().any(|event| event == "write:1004"));
+    assert_eq!(chunkdb.snapshot().delete_calls, 1);
 }

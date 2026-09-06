@@ -618,11 +618,17 @@ async fn read(&self, segment: &Segment, test_pattern_offset: u64) -> Result<Byte
 async fn fsync(&self, disk_id: &DiskId) -> Result<(), IoError>
 ```
 
-The client routes to the correct node's diskio server based on
-`segment.node_id` (from the node's service registry entry in
-group-0). Connection pooling is handled by `crowdb-rpc-ffi`'s
-`ConnectionPool`. Follows the existing `crowdb-diskdb-client` /
-`crowdb-chunkdb-client` crate pattern.
+The chunk client combines DiskIO service registrations with hardware disk-group
+ownership to build an immutable `disk_id -> endpoint + connection` snapshot.
+Every disk group must have exactly one live owner. Missing and duplicate owners
+fail discovery; there is no fallback endpoint. Refresh builds the snapshot away
+from the write path and publishes it atomically.
+
+`DiskioClient::write_bytes` retains the caller's owned `Bytes` allocation in
+the RPC buffer until completion. This avoids a client-side `Bytes` to `Vec`
+payload copy. On the server, the decoded payload continues directly into
+`IoEngine::write`, so no additional copy is introduced between RPC receive and
+I/O submission.
 
 A connection drop during a write is similar to a timeout: the client
 does not know the result (the I/O may still complete on the server —
